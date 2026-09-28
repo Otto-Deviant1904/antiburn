@@ -1,4 +1,4 @@
-import { AlertTriangle, Check, FolderPlus, Lock, X } from "lucide-react"
+import { AlertTriangle, Check, ChevronRight, FolderPlus, Lock, X } from "lucide-react"
 
 import appIcon from "../../assets/app-icon.png"
 import { useState } from "react"
@@ -288,6 +288,8 @@ function SourcesAndRepos({
   const toggleable = repositories.filter((item) => item.status !== "not_cloned")
   const allEnabled = toggleable.length > 0 && toggleable.every((item) => item.enabled)
   const [choosingRepos, setChoosingRepos] = useState(false)
+  const [defaultsExpanded, setDefaultsExpanded] = useState(false)
+  const blockedDefaults = defaultRoots.filter((root) => blockedRoots.includes(root)).length
   // Every repository is on and the reader has not asked to see them, so the
   // list stays closed.
   const scanningAll = allEnabled && !choosingRepos
@@ -328,8 +330,32 @@ function SourcesAndRepos({
         <ScrollPane className="mt-2.5" viewportClassName="pr-1">
           {defaultRoots.length > 0 && (
             <>
-              <p className="pb-1 type-footnote font-semibold! text-label-tertiary">Defaults</p>
-              <ul className="space-y-0.5 pb-3">
+              <button
+                type="button"
+                aria-expanded={defaultsExpanded}
+                onClick={() => setDefaultsExpanded((open) => !open)}
+                className="mb-1 flex items-center gap-1 rounded-control type-footnote text-label-tertiary hover:text-label-secondary"
+              >
+                <ChevronRight
+                  size={12}
+                  strokeWidth={2.5}
+                  aria-hidden="true"
+                  className={cn(
+                    "shrink-0 transition-transform duration-[var(--duration-fast)] ease-out",
+                    defaultsExpanded && "rotate-90",
+                  )}
+                />
+                <span className="font-semibold!">
+                  Searching {defaultRoots.length} default{" "}
+                  {defaultRoots.length === 1 ? "location" : "locations"}
+                </span>
+                {blockedDefaults > 0 ? (
+                  <span className="type-caption">
+                    · {blockedDefaults} {blockedDefaults === 1 ? "needs" : "need"} permission
+                  </span>
+                ) : null}
+              </button>
+              <ul className={cn("space-y-0.5 pb-3", !defaultsExpanded && "hidden")}>
                 {defaultRoots.map((root) => {
                   const blocked = blockedRoots.includes(root)
                   return (
