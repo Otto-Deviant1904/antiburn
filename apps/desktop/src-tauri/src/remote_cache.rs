@@ -256,11 +256,7 @@ pub async fn sync_session(
             })
         })
         .and_then(|(_, manifest)| manifest.signature().ok());
-    let identity = Sha256::digest(format!("{}\0{}", session.agent, session.session_id).as_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    let parent = root.join("transcripts").join(host_id).join(identity);
+    let parent = cache_parent(root, &key)?;
     private_dir(&parent)?;
     let retained = previous
         .as_ref()
@@ -441,13 +437,82 @@ pub fn restore_fork_companions(store: &Store) -> Result<usize> {
         let Some(parent) = store.fork_parent(&record.key)? else {
             continue;
         };
-        let (dir, manifest) = manifest_for(&record)?;
-        if prepare_fork_parent(store, &record, &dir, &manifest, Some(&parent))? {
-            store.requeue_session_evidence(&record.key)?;
-            repaired += 1;
+        let repair = manifest_for(&record).and_then(|(dir, manifest)| {
+            prepare_fork_parent(store, &record, &dir, &manifest, Some(&parent))
+        });
+        match repair {
+            Ok(true) => {
+                store.requeue_session_evidence(&record.key)?;
+                repaired += 1;
+            }
+            Ok(false) => {}
+            Err(error) => {
+                if error.downcast_ref::<rusqlite::Error>().is_some() {
+                    return Err(error);
+                }
+                tracing::warn!(event = "remote_fork_repair_failed", error = %error);
+            }
         }
     }
     Ok(repaired)
+}
+
+pub fn prune_after_commit(store: &Store, root: &Path) {
+    if let Err(error) = prune_unreferenced(store, root) {
+        tracing::warn!(event = "remote_cache_cleanup_failed", error = %error);
+    }
+}
+
+pub fn delete_session(
+    store: &Store,
+    root: Option<&Path>,
+    key: &SessionKey,
+) -> Result<Option<(crate::store::Incarnation, crate::store::Revision)>> {
+    ensure!(key.remote_host_id().is_some(), "Not a remote session");
+    let record = store.session(key)?;
+    let removed = store.delete_session(key)?;
+    if let Some(record) = record {
+        let cleanup = root
+            .context("Remote cache directory is unavailable")
+            .and_then(|root| remove_cached_generation(root, &record));
+        if let Err(error) = cleanup {
+            tracing::warn!(event = "remote_cache_cleanup_failed", error = %error);
+        }
+    }
+    Ok(removed)
+}
+
+fn cache_parent(root: &Path, key: &SessionKey) -> Result<PathBuf> {
+    let host_id = key.remote_host_id().context("Not a remote session")?;
+    ensure!(safe_cache_identity(host_id), "Invalid remote host identity");
+    let identity = Sha256::digest(format!("{}\0{}", key.agent, key.session_id).as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(root.join("transcripts").join(host_id).join(identity))
+}
+
+fn remove_cached_generation(root: &Path, record: &SessionRecord) -> Result<()> {
+    let directory = Path::new(&record.source_label)
+        .parent()
+        .context("Missing transcript directory")?;
+    let canonical = match fs::canonicalize(directory) {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    let transcripts = fs::canonicalize(root.join("transcripts"))?;
+    let expected = fs::canonicalize(cache_parent(root, &record.key)?)?;
+    ensure!(
+        expected.starts_with(&transcripts),
+        "Remote cache path escaped storage"
+    );
+    ensure!(
+        canonical.parent() == Some(expected.as_path()),
+        "Remote cache identity mismatch"
+    );
+    fs::remove_dir_all(canonical)?;
+    Ok(())
 }
 
 pub fn prune_unreferenced(store: &Store, root: &Path) -> Result<usize> {
@@ -624,6 +689,99 @@ mod tests {
         assert!(unpack(&bundle, &target, &manifest.session).is_err());
     }
 
+    fn cached_record(path: &Path) -> SessionRecord {
+        SessionRecord {
+            key: SessionKey::new("ssh:host", "claude-code", "synthetic"),
+            source_kind: "file".into(),
+            source_label: path.to_string_lossy().into_owned(),
+            wsl_distro: None,
+            title: None,
+            title_source: None,
+            cwd: None,
+            surface: "cli".into(),
+            updated_at_epoch: Some(1),
+            activity_cursor: "fixture".into(),
+            activity_source: "mtime".into(),
+            subagent_count: 0,
+            fork_parent_session_id: None,
+            source_fingerprint: None,
+        }
+    }
+
+    #[test]
+    fn committed_deletion_survives_cleanup_errors_and_rejects_unowned_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory(temp.path()).unwrap();
+        let root = temp.path().join("remote");
+        let parent = cache_parent(
+            &root,
+            &SessionKey::new("ssh:host", "claude-code", "synthetic"),
+        )
+        .unwrap();
+        fs::create_dir_all(&parent).unwrap();
+        let broken = parent.join("generation");
+        fs::write(&broken, "not a directory").unwrap();
+        let outside = temp.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("keep"), "keep").unwrap();
+        for directory in [&broken, &outside] {
+            let record = cached_record(&directory.join("synthetic.jsonl"));
+            store
+                .upsert_sessions(std::slice::from_ref(&record), &["claude-code"])
+                .unwrap();
+            assert!(remove_cached_generation(&root, &record).is_err());
+            assert!(
+                delete_session(&store, Some(&root), &record.key)
+                    .unwrap()
+                    .is_some()
+            );
+            assert!(store.session(&record.key).unwrap().is_none());
+            assert!(directory.exists());
+        }
+        assert_eq!(fs::read_to_string(outside.join("keep")).unwrap(), "keep");
+        let good = parent.join("valid");
+        fs::create_dir(&good).unwrap();
+        fs::write(good.join("synthetic.jsonl"), "fixture").unwrap();
+        let record = cached_record(&good.join("synthetic.jsonl"));
+        store
+            .upsert_sessions(std::slice::from_ref(&record), &["claude-code"])
+            .unwrap();
+        assert!(
+            delete_session(&store, Some(&root), &record.key)
+                .unwrap()
+                .is_some()
+        );
+        assert!(!good.exists());
+    }
+
+    #[test]
+    fn pruning_failure_does_not_undo_committed_retention() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory(temp.path()).unwrap();
+        let record = cached_record(&temp.path().join("synthetic.jsonl"));
+        store
+            .upsert_sessions(std::slice::from_ref(&record), &["claude-code"])
+            .unwrap();
+        fs::write(temp.path().join("transcripts"), "not a directory").unwrap();
+        store
+            .update_settings(|settings| settings.session_data_retention_days = 30)
+            .unwrap();
+        let (removed, revision) = store.apply_session_retention(4_000_000_000).unwrap();
+        assert_eq!(removed, 1);
+        assert!(prune_unreferenced(&store, temp.path()).is_err());
+        prune_after_commit(&store, temp.path());
+        assert_eq!(revision, store.revision());
+        assert!(store.session(&record.key).unwrap().is_none());
+        let mut settings = store.settings().unwrap();
+        settings.session_data_retention_days = 90;
+        let (_, saved, ()) = store
+            .replace_settings_preserving_interface_scale(&settings, |_, _, _| Ok(()))
+            .unwrap();
+        prune_after_commit(&store, temp.path());
+        assert_eq!(saved.session_data_retention_days, 90);
+        assert_eq!(store.settings().unwrap().session_data_retention_days, 90);
+    }
+
     #[test]
     fn staging_projection_accounts_for_the_extracted_manifest_copy() {
         assert!(staging_projection_fits(
@@ -746,6 +904,19 @@ mod tests {
         store
             .record_fork_parent(&records[1].key, "ancestor")
             .unwrap();
+        let mut damaged = records[1].clone();
+        damaged.key = SessionKey::new("ssh:one", "claude-code", "damaged");
+        damaged.source_label = temp
+            .path()
+            .join("missing/damaged.jsonl")
+            .to_string_lossy()
+            .into_owned();
+        damaged.updated_at_epoch = Some(2);
+        store
+            .upsert_sessions(std::slice::from_ref(&damaged), &["claude-code"])
+            .unwrap();
+        store.record_fork_parent(&damaged.key, "ancestor").unwrap();
+        assert_eq!(store.recent_sessions(0, 10).unwrap()[0].key, damaged.key);
         assert_eq!(restore_fork_companions(&store).unwrap(), 1);
         assert_eq!(restore_fork_companions(&store).unwrap(), 0);
         assert_eq!(

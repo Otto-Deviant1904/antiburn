@@ -229,7 +229,9 @@ companions and historical configuration remain unavailable or partial, never
 clean. This computer's configuration and provider account do not enrich remote
 evidence. Bounded discovery does not establish a complete remote inventory.
 Rejected or incomplete exports keep the previous cached generation; a partial
-host scan does not establish fresh evidence for the rejected sessions.
+host scan does not establish fresh evidence for the rejected sessions. Skipping
+expired listing candidates does not prove a complete companion roster; Codex
+exports still require bounded origin discovery for older linked children.
 Remote sessions do not contribute to the local global-check report,
 Overview, quota attribution, or live HUD. Local path actions, Auto Fix, and
 remediation/watch enrollment reject remote origins at the backend boundary.

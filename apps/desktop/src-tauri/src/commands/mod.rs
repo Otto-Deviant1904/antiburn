@@ -390,7 +390,7 @@ pub async fn set_settings(
     settings: AppSettings,
 ) -> CommandResult<AppSettings> {
     let _settings_command = SETTINGS_COMMAND_LOCK.lock().await;
-    let remote_host_ids = crate::remote_sessions::host_ids(&app)?;
+    let remote_host_ids = crate::remote_sessions::lifecycle_host_ids(&app);
     let database_app = app.clone();
     let (previous, saved) = run_blocking(move || {
         crate::remote_sync::with_lifecycle_guard(&database_app, &remote_host_ids, || {
@@ -423,7 +423,7 @@ pub async fn set_settings(
             let revision = store.revision();
             crate::retention::note_removed(&database_app, removed, revision);
             if let Ok(root) = crate::remote_sessions::directory(&database_app) {
-                crate::remote_cache::prune_unreferenced(&store, &root)?;
+                crate::remote_cache::prune_after_commit(&store, &root);
             }
             Ok((previous, saved))
         })
@@ -2240,22 +2240,13 @@ pub async fn delete_session_data(
                 &action_app,
                 std::slice::from_ref(&host_id),
                 || {
-                    let cached_dir =
-                        action_app
-                            .state::<Store>()
-                            .session(&delete_key)?
-                            .and_then(|record| {
-                                Path::new(&record.source_label)
-                                    .parent()
-                                    .map(Path::to_path_buf)
-                            });
-                    let removed = action_app.state::<Store>().delete_session(&delete_key)?;
-                    if let Some(cached_dir) = cached_dir
-                        && cached_dir.exists()
-                    {
-                        std::fs::remove_dir_all(&cached_dir)?;
-                    }
-                    Ok(removed)
+                    crate::remote_cache::delete_session(
+                        &action_app.state::<Store>(),
+                        crate::remote_sessions::directory(&action_app)
+                            .ok()
+                            .as_deref(),
+                        &delete_key,
+                    )
                 },
             )
             .map_err(fail)
@@ -2657,7 +2648,7 @@ fn reject_remote_cache_path(app: &tauri::AppHandle, target: &Path) -> CommandRes
 }
 
 fn is_remote_cache_path(target: &Path, remote_root: &Path) -> bool {
-    target.starts_with(remote_root)
+    presentable(target.to_path_buf()).starts_with(presentable(remote_root.to_path_buf()))
 }
 
 fn project_directory(path: &str) -> CommandResult<PathBuf> {

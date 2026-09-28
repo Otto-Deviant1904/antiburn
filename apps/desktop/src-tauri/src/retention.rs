@@ -43,11 +43,11 @@ pub fn note_removed(app: &AppHandle, removed: usize, revision: Revision) {
 }
 
 fn cleanup(app: &AppHandle) {
-    let hosts = crate::remote_sessions::host_ids(app).unwrap_or_default();
+    let hosts = crate::remote_sessions::lifecycle_host_ids(app);
     let result = crate::remote_sync::with_lifecycle_guard(app, &hosts, || {
         let result = app.state::<Store>().apply_session_retention(unix_now())?;
         if let Ok(root) = crate::remote_sessions::directory(app) {
-            crate::remote_cache::prune_unreferenced(&app.state::<Store>(), &root)?;
+            crate::remote_cache::prune_after_commit(&app.state::<Store>(), &root);
         }
         Ok(result)
     });

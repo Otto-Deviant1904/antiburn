@@ -718,7 +718,7 @@ impl Registry {
         now: i64,
         out: &mut Vec<SessionEvent>,
     ) -> Touch {
-        if now - fact.at >= ACTIVE_SESSION_WINDOW_SECS {
+        if key.remote_host_id().is_some() || now - fact.at >= ACTIVE_SESSION_WINDOW_SECS {
             return Touch::Stale;
         }
         if let Some(entry) = self.live.get(key).copied() {

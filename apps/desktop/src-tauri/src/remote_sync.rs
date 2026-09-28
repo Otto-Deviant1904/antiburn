@@ -284,6 +284,28 @@ fn with_lifecycle_guard_inner<T>(
     operation: impl FnOnce() -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
     let scheduler = app.state::<Scheduler>();
+    with_scheduler_lifecycle_guard(&scheduler, host_ids, drop_pending, operation)
+}
+
+struct LifecycleWrite<'a>(&'a Scheduler);
+
+impl Drop for LifecycleWrite<'_> {
+    fn drop(&mut self) {
+        self.0
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lifecycle_write = false;
+        self.0.wake.notify_one();
+    }
+}
+
+fn with_scheduler_lifecycle_guard<T>(
+    scheduler: &Scheduler,
+    host_ids: &[String],
+    drop_pending: bool,
+    operation: impl FnOnce() -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
     let _lifecycle = scheduler
         .lifecycle
         .lock()
@@ -295,16 +317,8 @@ fn with_lifecycle_guard_inner<T>(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         begin_lifecycle_write(&mut state, host_ids, drop_pending);
     }
-    let result = operation();
-    {
-        let mut state = scheduler
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.lifecycle_write = false;
-    }
-    scheduler.wake.notify_one();
-    result
+    let _write = LifecycleWrite(scheduler);
+    operation()
 }
 
 fn due(interval: u64, finished: Option<Instant>, now: Instant) -> bool {
@@ -517,6 +531,54 @@ mod tests {
         state.generations.insert("host".into(), 1);
         assert!(!commit_allowed(&state, "host", 0));
         assert!(commit_allowed(&state, "host", 1));
+    }
+
+    #[tokio::test]
+    async fn lifecycle_guard_cleans_up_on_success_error_and_unwind() {
+        for destructive in [false, true] {
+            for outcome in [0, 1, 2] {
+                let scheduler = Scheduler::new(300);
+                {
+                    let mut state = scheduler.state.lock().unwrap();
+                    state.active = Some(Progress {
+                        host_id: "host".into(),
+                        completed: 0,
+                        total: 1,
+                    });
+                    state.queued.insert("host".into());
+                    state.pending.push_back(Job {
+                        host_id: "host".into(),
+                        origin: ScanOrigin::Manual,
+                    });
+                }
+                let result = std::panic::catch_unwind(|| {
+                    with_scheduler_lifecycle_guard(&scheduler, &[], destructive, || {
+                        assert!(scheduler.state.lock().unwrap().lifecycle_write);
+                        match outcome {
+                            0 => Ok(()),
+                            1 => anyhow::bail!("fixture error"),
+                            _ => panic!("fixture unwind"),
+                        }
+                    })
+                });
+                match outcome {
+                    0 => assert!(result.unwrap().is_ok()),
+                    1 => assert!(result.unwrap().is_err()),
+                    _ => assert!(result.is_err()),
+                }
+                {
+                    let state = scheduler.state.lock().unwrap();
+                    assert!(!state.lifecycle_write);
+                    assert!(!commit_allowed(&state, "host", 0));
+                    assert!(commit_allowed(&state, "host", 1));
+                    assert_eq!(state.pending.is_empty(), destructive);
+                }
+                tokio::time::timeout(Duration::from_millis(100), scheduler.wake.notified())
+                    .await
+                    .unwrap();
+                assert!(with_scheduler_lifecycle_guard(&scheduler, &[], false, || Ok(())).is_ok());
+            }
+        }
     }
 
     #[test]

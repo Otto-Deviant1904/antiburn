@@ -122,6 +122,49 @@ describe("remoteHosts external store", () => {
     unsubscribe()
   })
 
+  it("keeps pushed sync status when an older interval response arrives", async () => {
+    const response = deferred<RemoteSyncStatus>()
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "get_remote_hosts") return Promise.resolve([])
+      if (command === "get_remote_sync_status") return Promise.resolve(sync)
+      if (command === "set_remote_sync_interval") return response.promise
+      throw new Error(command)
+    })
+    const { remoteHosts } = await import("./remoteHosts")
+    const stop = remoteHosts.subscribe(() => undefined)
+    await vi.waitFor(() => expect(remoteHosts.getSnapshot().loaded).toBe(true))
+    const change = remoteHosts.setInterval(60)
+    const current: RemoteSyncStatus = {
+      intervalSecs: 900,
+      active: { hostId: "current", completed: 1, total: 2 },
+      pendingHostIds: ["next"],
+    }
+    mocks.handlers.get("remote-sync-status")!({ payload: current })
+    response.resolve({ ...sync, intervalSecs: 60 })
+    await change
+    expect(remoteHosts.getSnapshot().sync).toEqual(current)
+    stop()
+  })
+
+  it("ignores interval responses from a disposed subscription generation", async () => {
+    const response = deferred<RemoteSyncStatus>()
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "get_remote_hosts") return Promise.resolve([])
+      if (command === "set_remote_sync_interval") return response.promise
+      return Promise.resolve(sync)
+    })
+    const { remoteHosts } = await import("./remoteHosts")
+    const stop = remoteHosts.subscribe(() => undefined)
+    await vi.waitFor(() => expect(remoteHosts.getSnapshot().loaded).toBe(true))
+    const change = remoteHosts.setInterval(60)
+    stop()
+    const restarted = remoteHosts.subscribe(() => undefined)
+    response.resolve({ ...sync, intervalSecs: 60 })
+    await change
+    expect(remoteHosts.getSnapshot().sync).toEqual(sync)
+    restarted()
+  })
+
   it("contains listener setup failures and cleans up successful listeners", async () => {
     mocks.listen.mockImplementation(
       async (name: string, handler: (event: { payload: unknown }) => void) => {

@@ -102,7 +102,10 @@ private cache files, and keeps native and WSL discovery separate.
 
 Each listing returns up to 200 supported sessions from seven days, ordered
 newest first within the examined set. Entry, candidate, byte, and elapsed-time
-budgets can truncate discovery before every candidate is examined.
+budgets can truncate discovery before every candidate is examined. Listings skip
+expired transcripts before preview reads. Codex exports use bounded first-record
+reads to retain linked children even when a child's modification time is older
+than the parent or the listing window.
 Listing absence does not prove deletion. Exported transcript, child, fork-parent,
 and supported sidecar inputs must pass the helper's association and
 descriptor-relative admission checks. Symlink components and non-regular files

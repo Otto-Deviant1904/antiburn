@@ -2764,7 +2764,7 @@ impl Store {
              SELECT environment_key, agent, session_id, ?2, ?3, ?7, 'direct', ?4
               FROM session
               WHERE agent = ?1
-                AND environment_key = 'native'
+                AND environment_key NOT LIKE 'ssh:%'
                 AND unixepoch(first_seen_at) >= ?5
                 AND COALESCE(updated_at_epoch, 0) BETWEEN MAX(?5, ?6 - 600) AND ?6
                 AND COALESCE(updated_at_epoch, 0) > COALESCE((

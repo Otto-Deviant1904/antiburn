@@ -301,7 +301,8 @@ Those are machine gates, not boxes for a person to repeat.
 
 The release includes `antiburn-remote-<version>-x86_64-unknown-linux-musl.tar.gz`
 and `antiburn-remote-<version>-aarch64-unknown-linux-musl.tar.gz`. Both are covered
-by `SHA256SUMS` and provenance. Their archive version follows the application
+by `SHA256SUMS`. Build provenance is included when the public-repository
+attestation steps run; private-repository releases skip those steps. Their archive version follows the application
 release; the helper's wire protocol version is a separate compatibility check.
 Follow [remote host setup](../remote-sessions.md) to exercise SSH discovery and
 offline cached analysis on a Linux host before publishing.

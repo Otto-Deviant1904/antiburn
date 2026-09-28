@@ -136,6 +136,26 @@ impl RequestBudget {
         self.read(file, ReadClass::Preview, MAX_PREVIEW_BYTES_PER_FILE)
     }
 
+    pub(crate) fn read_origin(&mut self, file: &File) -> Result<BoundedRead> {
+        let mut limit = 512;
+        loop {
+            let mut read = self.read(file, ReadClass::Preview, limit)?;
+            if let Some(end) = read.bytes.iter().position(|byte| *byte == b'\n') {
+                read.bytes.truncate(end + 1);
+                return Ok(read);
+            }
+            if !read.truncated {
+                return Ok(read);
+            }
+            if limit == MAX_PREVIEW_BYTES_PER_FILE {
+                return Err(
+                    BudgetExhausted("Remote session origin exceeds the preview limit").into(),
+                );
+            }
+            limit = (limit * 2).min(MAX_PREVIEW_BYTES_PER_FILE);
+        }
+    }
+
     pub(crate) fn read_label(&mut self, file: &File) -> Result<BoundedRead> {
         self.read(file, ReadClass::Label, MAX_LABEL_BYTES_PER_FILE)
     }

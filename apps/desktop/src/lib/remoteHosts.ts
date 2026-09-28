@@ -172,8 +172,10 @@ class RemoteHostsStore {
   }
 
   setInterval = async (seconds: RemoteSyncIntervalSecs): Promise<void> => {
+    const generation = this.generation
+    const revision = ++this.syncRevision
     const sync = await setRemoteSyncInterval(seconds)
-    this.publish({ sync })
+    if (generation === this.generation && revision === this.syncRevision) this.publish({ sync })
   }
 
   private start = async (): Promise<void> => {

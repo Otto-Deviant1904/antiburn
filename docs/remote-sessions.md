@@ -115,5 +115,6 @@ cargo build --manifest-path crates/antiburn-remote/Cargo.toml --release --locked
 Build on the target Linux architecture. The release workflow produces static
 musl binaries for both architectures, tests the native helper, rejects binaries
 that require a dynamic loader or shared libraries, and includes the archives
-in the application release's `SHA256SUMS` and provenance. Running local builds
+in the application release's `SHA256SUMS`. Public-repository releases also include
+build provenance; private-repository releases skip attestation. Running local builds
 or tests does not create or publish a release.

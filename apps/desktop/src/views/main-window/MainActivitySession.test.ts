@@ -9,6 +9,7 @@ import {
   type SessionUpdatedPayload,
 } from "../../lib/ipc"
 import { sessionKey } from "../../lib/sessionSubject"
+import { remoteHosts } from "../../lib/remoteHosts"
 import { liveSessions } from "../../lib/sessionLifecycle"
 import { toActivityEntry } from "../../lib/activityEntries"
 import { MainWindowNavigationSession } from "./MainWindowNavigationSession"
@@ -138,6 +139,52 @@ beforeEach(() => {
 afterEach(() => sessions.forEach((session) => session.dispose()))
 
 describe("MainActivitySession", () => {
+  it("reads loaded hosts for a late subscriber and reconciles after settings load", async () => {
+    const settings = deferred<typeof DEFAULT_SETTINGS>()
+    mocks.getSettings.mockReturnValue(settings.promise)
+    const subscribe = vi.spyOn(remoteHosts, "subscribe").mockReturnValue(() => {})
+    const snapshot = vi.spyOn(remoteHosts, "getSnapshot").mockReturnValue({
+      ...remoteHosts.getSnapshot(),
+      loaded: true,
+      loading: false,
+      hosts: [
+        {
+          id: "host-a",
+          sshAlias: "host-a",
+          displayName: null,
+          automaticSyncEnabled: true,
+          status: "idle",
+          lastSuccessfulSyncEpoch: null,
+          cachedSessionCount: 1,
+          lastError: null,
+        },
+      ],
+    })
+    try {
+      const { session } = start()
+      await vi.waitFor(() => expect(session.getSnapshot().remoteHostsLoaded).toBe(true))
+      expect(session.getSnapshot().remoteHosts.map((host) => host.id)).toEqual(["host-a"])
+      expect(mocks.setSettings).not.toHaveBeenCalled()
+      settings.resolve({
+        ...DEFAULT_SETTINGS,
+        sessionFilter: serializeSessionFilters({
+          ...parseSessionFilters("all"),
+          source: { kind: "selected", includeLocal: false, remote: ["host-a", "removed"] },
+        }),
+      })
+      await ready(session)
+      expect(session.getSnapshot().filters.source).toEqual({
+        kind: "selected",
+        includeLocal: false,
+        remote: "all",
+      })
+    } finally {
+      sessions.forEach((session) => session.dispose())
+      subscribe.mockRestore()
+      snapshot.mockRestore()
+    }
+  })
+
   it("keeps the real Overview local across crowded remote refreshes and visibility changes", async () => {
     const now = Date.now()
     const remoteRows = Array.from({ length: 500 }, (_, i) =>

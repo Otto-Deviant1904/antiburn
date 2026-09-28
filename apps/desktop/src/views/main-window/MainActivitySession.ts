@@ -361,24 +361,14 @@ export class MainActivitySession {
             })
         }),
       )
-      this.stops.push(
-        remoteHosts.subscribe(() => {
-          if (generation !== this.generation) return
-          const next = remoteHosts.getSnapshot()
-          this.update({ remoteHosts: next.hosts, remoteHostsLoaded: next.loaded })
-          if (!next.loaded) return
-          const source = reconcileSessionSource(
-            this.snapshot.filters.source ?? { kind: "all" },
-            next.hosts.map((host) => host.id),
-          )
-          this.changeFilters(
-            { ...this.snapshot.filters, source },
-            undefined,
-            undefined,
-            "automatic",
-          )
-        }),
-      )
+      const consumeRemoteHosts = () => {
+        if (generation !== this.generation) return
+        const next = remoteHosts.getSnapshot()
+        this.update({ remoteHosts: next.hosts, remoteHostsLoaded: next.loaded })
+        if (this.initialized) this.reconcileRemoteSource()
+      }
+      this.stops.push(remoteHosts.subscribe(consumeRemoteHosts))
+      consumeRemoteHosts()
     }
     if (generation !== this.generation) return
     const settingsVersion = this.settingsVersion
@@ -493,6 +483,15 @@ export class MainActivitySession {
     return withRegistryActivity(liveSessions.getSnapshot(), entries)
   }
 
+  private reconcileRemoteSource(): void {
+    if (!this.snapshot.remoteHostsLoaded) return
+    const source = reconcileSessionSource(
+      this.snapshot.filters.source ?? { kind: "all" },
+      this.snapshot.remoteHosts.map((host) => host.id),
+    )
+    this.changeFilters({ ...this.snapshot.filters, source }, undefined, undefined, "automatic")
+  }
+
   private applySettings(settings: AppSettings): void {
     const previous = this.snapshot.settings
     const next = this.settingsWrite
@@ -509,6 +508,7 @@ export class MainActivitySession {
       filters,
     })
     if (filterChanged && !this.restoringNavigation) this.onNavigation?.("automatic")
+    this.reconcileRemoteSource()
     if (
       settings.activityWindowDays !== previous.activityWindowDays ||
       settings.disabledAgents.join() !== previous.disabledAgents.join()

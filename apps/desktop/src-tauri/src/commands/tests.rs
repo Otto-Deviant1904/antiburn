@@ -704,6 +704,26 @@ fn cached_remote_paths_are_rejected_without_a_renderer_origin_hint() {
     ));
 }
 
+#[cfg(windows)]
+#[test]
+fn remote_path_guard_normalizes_drive_and_unc_prefixes() {
+    for (root, inside, outside) in [
+        (
+            r"\\?\C:\cache\remote",
+            r"C:\cache\remote\transcripts\file",
+            r"C:\cache\remote-other\file",
+        ),
+        (
+            r"\\?\UNC\server\share\remote",
+            r"\\server\share\remote\file",
+            r"\\server\share\elsewhere\file",
+        ),
+    ] {
+        assert!(is_remote_cache_path(Path::new(inside), Path::new(root)));
+        assert!(!is_remote_cache_path(Path::new(outside), Path::new(root)));
+    }
+}
+
 fn evidence_row(
     status: crate::store::EvidenceStatus,
     evidence: Option<SessionEvidence>,

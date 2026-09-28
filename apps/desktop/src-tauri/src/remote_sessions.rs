@@ -638,6 +638,20 @@ pub fn scan_remote_host(app: AppHandle, id: String) -> Result<(), String> {
     Ok(())
 }
 
+pub(crate) fn lifecycle_host_ids(app: &AppHandle) -> Vec<String> {
+    lifecycle_ids(read_records(app))
+}
+
+fn lifecycle_ids(records: Result<Vec<HostRecord>, String>) -> Vec<String> {
+    match records {
+        Ok(records) => records.into_iter().map(|record| record.id).collect(),
+        Err(error) => {
+            tracing::warn!(event = "remote_host_settings_unavailable", error = %error);
+            Vec::new()
+        }
+    }
+}
+
 pub(crate) fn host_ids(app: &AppHandle) -> Result<Vec<String>, String> {
     Ok(read_records(app)?
         .into_iter()
@@ -964,6 +978,19 @@ mod tests {
             assert_eq!(summary.attempted, 2);
             assert_eq!(outcomes.count(), 1);
         }
+    }
+
+    #[test]
+    fn corrupt_host_records_do_not_block_lifecycle_operations() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("hosts.json");
+        std::fs::write(&path, "invalid json").unwrap();
+        assert!(read_records_from(&path).is_err());
+        assert!(lifecycle_ids(read_records_from(&path)).is_empty());
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(read_records_from(&path).is_err());
+        assert!(lifecycle_ids(read_records_from(&path)).is_empty());
     }
 
     #[test]
