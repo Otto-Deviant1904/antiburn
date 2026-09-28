@@ -81,6 +81,9 @@ mod popover_peek;
 mod provider_accounts;
 mod provider_usage;
 pub mod remediation;
+mod remote_cache;
+mod remote_sessions;
+mod remote_sync;
 mod repositories;
 mod retention;
 mod runtime_pricing;
@@ -394,6 +397,7 @@ pub fn run() {
             schedulers.push(session_lifecycle::spawn(app.handle()));
             schedulers.push(session_projection::spawn(app.handle()));
             schedulers.push(scan::spawn_scheduler(app.handle()));
+            schedulers.push(remote_sync::spawn(app.handle()));
             schedulers.push(scan::live_poll::spawn_live_poll(app.handle()));
             schedulers.push(retention::spawn_scheduler(app.handle()));
             schedulers.push(insights_worker::spawn(app.handle()));

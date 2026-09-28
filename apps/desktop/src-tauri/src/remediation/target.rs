@@ -256,6 +256,9 @@ pub(crate) fn passive_remediations(
 ) -> Result<Vec<PassiveRemediation>> {
     let mut candidates = Vec::new();
     for finding in findings {
+        if finding.environment_key != "native" {
+            continue;
+        }
         let Some(agent) = crate::agents::kind_from_slug(&finding.agent) else {
             continue;
         };

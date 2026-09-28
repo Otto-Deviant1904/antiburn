@@ -16,6 +16,7 @@ mod evidence_tests;
 mod reader_tests;
 mod reconcile_tests;
 mod remediation_tests;
+mod remote_count_tests;
 mod resume_tests;
 mod revision_tests;
 mod settings_tests;
@@ -2450,4 +2451,43 @@ fn turn_row(turn_index: u64) -> TurnRow {
         subagent_launches: 0,
         content: Vec::new(),
     }
+}
+
+#[test]
+fn local_overview_rows_survive_more_than_the_shared_remote_limit() {
+    let store = store();
+    let mut rows = (0..501)
+        .map(|index| {
+            let mut row = session(&format!("remote-{index}"), 3000 + index);
+            row.key.environment_key = "ssh:host".into();
+            row
+        })
+        .collect::<Vec<_>>();
+    let native = session("native", 1000);
+    let mut wsl = session("wsl", 2000);
+    wsl.key.environment_key = "wsl:ubuntu".into();
+    wsl.wsl_distro = Some("Ubuntu".into());
+    rows.extend([native, wsl]);
+    store
+        .upsert_sessions(&rows, &crate::agents::evidence_cohort())
+        .unwrap();
+    let all = store.recent_sessions(0, 500).unwrap();
+    assert_eq!(all.len(), 500);
+    assert!(all.iter().all(|row| row.key.remote_host_id().is_some()));
+    let local = store
+        .recent_local_sessions_excluding(0, 6, &DisabledAgents::default())
+        .unwrap();
+    assert_eq!(
+        local
+            .iter()
+            .map(|row| row.key.session_id.as_str())
+            .collect::<Vec<_>>(),
+        ["wsl", "native"]
+    );
+    assert!(
+        store
+            .recent_local_sessions_excluding(0, 6, &DisabledAgents::parse("claude-code"))
+            .unwrap()
+            .is_empty()
+    );
 }

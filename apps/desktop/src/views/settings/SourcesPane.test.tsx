@@ -52,9 +52,22 @@ beforeEach(() => {
 
 describe("SourcesPane scanning", () => {
   it("shows when the index was last refreshed and can rescan on demand", async () => {
+    mockCommands({
+      get_folder_permissions: {
+        supported: true,
+        deferred: [{ dir: "Documents", pathCount: 1 }],
+        granted: [],
+      },
+    })
     render(<SourcesPane discoveryPaused={false} />)
 
     expect(await screen.findByText(/scanned 2m ago/i)).toBeInTheDocument()
+    const warning = await screen.findByText("antiburn can’t read Documents yet.")
+    const remote = screen.getByRole("heading", { name: "Remote hosts" })
+    expect(warning.compareDocumentPosition(remote) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(
+      0,
+    )
+    expect(screen.getAllByRole("heading", { level: 2 })[0]).toBe(remote)
 
     fireEvent.click(screen.getByRole("button", { name: "Rescan" }))
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("scan_now"))

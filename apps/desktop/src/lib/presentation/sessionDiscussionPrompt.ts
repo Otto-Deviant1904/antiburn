@@ -124,7 +124,7 @@ export function sessionDiscussionPrompt({
     `- Agent: ${text(agentDisplayName(subject.agent))} (${text(subject.agent)})`,
     `- Models / thinking modes: ${models.length ? models.map(text).join(", ") : data?.models.length ? data.models.map(text).join(", ") : "Unavailable"}`,
     `- Repository label: ${subject.repo ? text(subject.repo) : "Unavailable"}`,
-    `- Origin: ${subject.wslDistro ? `WSL (${text(subject.wslDistro)})` : "Native"}`,
+    `- Origin: ${subject.remoteHostId ? "Remote" : subject.wslDistro ? `WSL (${text(subject.wslDistro)})` : "Native"}`,
     ...(payload?.sourcePath
       ? ["- Source path (JSON string):", "```json", JSON.stringify(payload.sourcePath), "```"]
       : ["- Source path (JSON string): Unavailable"]),

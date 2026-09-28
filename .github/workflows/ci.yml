@@ -120,6 +120,12 @@ jobs:
         working-directory: crates/antiburn-local
         run: cargo nextest run --locked --lib --tests
 
+  remote-helper:
+    name: remote helper
+    needs: classify
+    if: needs.classify.outputs.engine == 'true' || needs.classify.outputs.desktop_backend == 'true'
+    uses: ./.github/workflows/build-remote-helper.yml
+
   desktop-frontend:
     name: desktop app (frontend, ${{ matrix.name }})
     needs: classify
@@ -588,6 +594,9 @@ jobs:
         working-directory: crates/antiburn-local
         run: cargo deny --locked check advisories
 
+      - name: Check remote helper dependencies
+        run: cargo deny --manifest-path crates/antiburn-remote/Cargo.toml --locked check --config crates/antiburn-local/deny.toml bans licenses advisories
+
       - name: Check desktop app licenses and dependency bans
         working-directory: apps/desktop/src-tauri
         run: cargo deny --locked check bans licenses
@@ -691,6 +700,7 @@ jobs:
     needs:
       - classify
       - engine
+      - remote-helper
       - desktop-frontend
       - desktop-backend
       - installer-tests
@@ -704,6 +714,7 @@ jobs:
     env:
       CLASSIFY_RESULT: ${{ needs.classify.result }}
       ENGINE_RESULT: ${{ needs.engine.result }}
+      REMOTE_HELPER_RESULT: ${{ needs.remote-helper.result }}
       FRONTEND_RESULT: ${{ needs.desktop-frontend.result }}
       BACKEND_RESULT: ${{ needs.desktop-backend.result }}
       INSTALLER_TESTS_RESULT: ${{ needs.installer-tests.result }}
@@ -751,6 +762,11 @@ jobs:
 
           require_success classify "$CLASSIFY_RESULT"
           require_if_selected engine "$ENGINE_SELECTED" "$ENGINE_RESULT"
+          if [[ "$ENGINE_SELECTED" == "true" || "$BACKEND_SELECTED" == "true" ]]; then
+            require_success remote-helper "$REMOTE_HELPER_RESULT"
+          else
+            allow_skip remote-helper "$REMOTE_HELPER_RESULT"
+          fi
           require_if_selected desktop-frontend "$FRONTEND_SELECTED" "$FRONTEND_RESULT"
           require_if_selected desktop-backend "$BACKEND_SELECTED" "$BACKEND_RESULT"
           require_if_selected installer-tests "$INSTALLERS_SELECTED" "$INSTALLER_TESTS_RESULT"

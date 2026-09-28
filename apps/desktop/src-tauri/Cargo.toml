@@ -53,6 +53,7 @@ tauri-build = { version = "2", features = [] }
 # The local engine. The shell adds windows, tray, and IPC around it and owns
 # no analysis logic of its own.
 antiburn-local = { path = "../../../crates/antiburn-local" }
+antiburn-remote = { path = "../../../crates/antiburn-remote" }
 # The notification window provides mechanism only. Every gating decision stays
 # in src/notifications.rs.
 antiburn-nudge = { path = "crates/nudge" }

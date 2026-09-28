@@ -1981,3 +1981,140 @@ fn listing_another_check_keeps_the_first_checks_target_ids() {
             .is_ok()
     );
 }
+
+fn project_folder_action_fixture() -> (
+    tempfile::TempDir,
+    Store,
+    RemediationController,
+    String,
+    SessionKey,
+    PathBuf,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let project = dir.path().join("project");
+    std::fs::create_dir(&project).unwrap();
+    store
+        .replace_repositories(&[crate::store::RepositoryRecord {
+            key: "project".into(),
+            repo_name: "project".into(),
+            full_name: "synthetic/project".into(),
+            status: "accessible".into(),
+            repo_root: Some(project.to_string_lossy().into_owned()),
+            suspected_path: None,
+            worktree_count: 1,
+            session_count: 1,
+            wsl_distro: None,
+            enabled: true,
+        }])
+        .unwrap();
+    crate::insights_report::tests::publish_reasoning_at_cwd(
+        &store,
+        "folder-session",
+        120,
+        120_000,
+        &project,
+        "max",
+    );
+    let controller = RemediationController::new(dir.path().to_owned());
+    let targets = controller
+        .list_burn_check_targets_at(
+            &store,
+            DetectorId::ModelOverthinking,
+            BurnCheckTargetContext {
+                environment_key: "native".into(),
+                window: ReportWindow {
+                    start_epoch: 100,
+                    end_epoch: 200,
+                },
+            },
+            TargetListOptions {
+                now: now_epoch(),
+                home: None,
+                cache_actions: true,
+            },
+        )
+        .unwrap();
+    assert_eq!(targets.targets.len(), 1);
+    assert_eq!(targets.targets[0].project_path.as_deref(), project.to_str());
+    let action_id = targets.targets[0].action_id.clone();
+    let key = SessionKey::new("native", "claude-code", "folder-session");
+    (dir, store, controller, action_id, key, project)
+}
+
+#[test]
+fn project_folder_action_resolves_the_issued_local_target() {
+    let (_dir, store, controller, action_id, _key, project) = project_folder_action_fixture();
+    assert_eq!(
+        controller.project_folder(&store, &action_id).unwrap(),
+        project.to_string_lossy()
+    );
+    assert!(matches!(
+        controller.project_folder(&store, "unknown-action"),
+        Err(ControllerError::TargetNotFound)
+    ));
+}
+
+#[test]
+fn project_folder_action_rejects_remote_origin_despite_matching_local_session_and_path() {
+    let (_dir, store, controller, action_id, key, project) = project_folder_action_fixture();
+    let mut remote = store.session(&key).unwrap().unwrap();
+    remote.key.environment_key = "ssh:host".into();
+    store
+        .upsert_sessions(&[remote], &crate::agents::evidence_cohort())
+        .unwrap();
+    let mut remote_target = controller.cached_target(&action_id, now_epoch()).unwrap();
+    remote_target.findings[0].environment_key = "ssh:host".into();
+    controller
+        .state
+        .lock()
+        .unwrap()
+        .targets
+        .get_mut(&DetectorId::ModelOverthinking)
+        .unwrap()
+        .push_back(TimedTarget {
+            id: "remote-action".into(),
+            value: remote_target,
+            created_at_epoch: now_epoch(),
+        });
+    assert!(matches!(
+        controller.project_folder(&store, "remote-action"),
+        Err(ControllerError::TargetNotFound)
+    ));
+    assert_eq!(
+        controller.project_folder(&store, &action_id).unwrap(),
+        project.to_string_lossy()
+    );
+}
+
+#[test]
+fn project_folder_action_rejects_expired_issued_target() {
+    let (_dir, store, controller, action_id, _key, _project) = project_folder_action_fixture();
+    controller
+        .state
+        .lock()
+        .unwrap()
+        .targets
+        .get_mut(&DetectorId::ModelOverthinking)
+        .unwrap()
+        .iter_mut()
+        .find(|target| target.id == action_id)
+        .unwrap()
+        .created_at_epoch = now_epoch() - ID_TTL.as_secs() as i64 - 1;
+    assert!(matches!(
+        controller.project_folder(&store, &action_id),
+        Err(ControllerError::TargetExpired)
+    ));
+}
+
+#[test]
+fn project_folder_action_rejects_deleted_session_despite_live_action_and_directory() {
+    let (_dir, store, controller, action_id, key, project) = project_folder_action_fixture();
+    store.delete_session(&key).unwrap();
+    assert!(project.is_dir());
+    assert!(controller.cached_target(&action_id, now_epoch()).is_ok());
+    assert!(matches!(
+        controller.project_folder(&store, &action_id),
+        Err(ControllerError::TargetNotFound)
+    ));
+}

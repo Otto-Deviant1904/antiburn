@@ -160,11 +160,13 @@ describe("BurnCheckTargetDetail", () => {
     expect(performProjectFolderAction).toHaveBeenCalledWith(
       "/tmp/worktrees/example-project",
       "copy",
+      { kind: "burnCheck", actionId: "action-fresh" },
     )
     await act(async () => fireEvent.click(screen.getByRole("button", { name: /^Open in/ })))
     expect(performProjectFolderAction).toHaveBeenCalledWith(
       "/tmp/worktrees/example-project",
       "open",
+      { kind: "burnCheck", actionId: "action-fresh" },
     )
     fireEvent.keyDown(document, { key: "Escape" })
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()

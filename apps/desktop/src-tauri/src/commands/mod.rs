@@ -390,36 +390,44 @@ pub async fn set_settings(
     settings: AppSettings,
 ) -> CommandResult<AppSettings> {
     let _settings_command = SETTINGS_COMMAND_LOCK.lock().await;
+    let remote_host_ids = crate::remote_sessions::host_ids(&app)?;
     let database_app = app.clone();
     let (previous, saved) = run_blocking(move || {
-        let store = database_app.state::<Store>();
-        let (previous, saved, removed) = {
-            let _analytics_transition = crate::analytics::lock_settings_transition();
-            let result = store
-                .replace_settings_preserving_interface_scale(&settings, |tx, previous, saved| {
-                    // The preference must still save when analytics serialization or
-                    // queue storage fails. The withdrawal signal is best effort.
-                    let _ = crate::analytics::prepare_opt_out_in_transaction(
-                        &database_app,
-                        tx,
-                        previous,
-                        saved,
-                    );
-                    crate::store::apply_session_retention_in(
-                        tx,
-                        saved.session_data_retention_days,
-                        crate::retention::unix_now(),
-                    )
-                })
-                .map_err(fail)?;
-            crate::analytics::handle_settings_transition(&database_app, &result.0, &result.1);
-            result
-        };
-        // This revision covers the completed retention commit. No report holds the
-        // Store guard.
-        let revision = store.revision();
-        crate::retention::note_removed(&database_app, removed, revision);
-        Ok((previous, saved))
+        crate::remote_sync::with_lifecycle_guard(&database_app, &remote_host_ids, || {
+            let store = database_app.state::<Store>();
+            let (previous, saved, removed) = {
+                let _analytics_transition = crate::analytics::lock_settings_transition();
+                let result = store.replace_settings_preserving_interface_scale(
+                    &settings,
+                    |tx, previous, saved| {
+                        // The preference must still save when analytics serialization or
+                        // queue storage fails. The withdrawal signal is best effort.
+                        let _ = crate::analytics::prepare_opt_out_in_transaction(
+                            &database_app,
+                            tx,
+                            previous,
+                            saved,
+                        );
+                        crate::store::apply_session_retention_in(
+                            tx,
+                            saved.session_data_retention_days,
+                            crate::retention::unix_now(),
+                        )
+                    },
+                )?;
+                crate::analytics::handle_settings_transition(&database_app, &result.0, &result.1);
+                result
+            };
+            // This revision covers the completed retention commit. No report holds the
+            // Store guard.
+            let revision = store.revision();
+            crate::retention::note_removed(&database_app, removed, revision);
+            if let Ok(root) = crate::remote_sessions::directory(&database_app) {
+                crate::remote_cache::prune_unreferenced(&store, &root)?;
+            }
+            Ok((previous, saved))
+        })
+        .map_err(fail)
     })
     .await?;
     apply_settings_transition_on_main(&app, &previous, &saved).await?;
@@ -746,6 +754,7 @@ fn record_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, sa
 pub async fn list_recent_sessions(
     app: tauri::AppHandle,
     window_days: Option<u32>,
+    local_only: Option<bool>,
 ) -> CommandResult<Vec<ActivityEntry>> {
     run_blocking(move || {
         #[cfg(feature = "memory-probe")]
@@ -763,9 +772,16 @@ pub async fn list_recent_sessions(
         };
         let now = scan::unix_now();
         let since = now - i64::from(days) * 86_400;
-        let sessions = store
-            .recent_sessions_excluding(since, MAX_ACTIVITY_ROWS, &settings.disabled_agents)
-            .map_err(fail)?;
+        let sessions = if local_only.unwrap_or(false) {
+            store.recent_local_sessions_excluding(
+                since,
+                MAX_ACTIVITY_ROWS,
+                &settings.disabled_agents,
+            )
+        } else {
+            store.recent_sessions_excluding(since, MAX_ACTIVITY_ROWS, &settings.disabled_agents)
+        }
+        .map_err(fail)?;
         let repositories = store.repositories().map_err(fail)?;
 
         let mut entries = Vec::with_capacity(sessions.len());
@@ -816,11 +832,20 @@ pub(crate) fn activity_entry(
     Ok(ActivityEntry {
         agent: session.key.agent.clone(),
         session_id: session.key.session_id.clone(),
-        repo: repository_label(repositories, session.cwd.as_deref()),
+        repo: repository_label(
+            if session.key.remote_host_id().is_some() {
+                &[]
+            } else {
+                repositories
+            },
+            session.cwd.as_deref(),
+        ),
         timestamp: iso_from_epoch(session.updated_at_epoch),
-        is_active: analysis::is_active(session.updated_at_epoch, now),
+        is_active: session.key.remote_host_id().is_none()
+            && analysis::is_active(session.updated_at_epoch, now),
         surface: session.surface.clone(),
         wsl_distro: session.wsl_distro.clone(),
+        remote_host_id: session.key.remote_host_id().map(str::to_owned),
         title: session.title.clone(),
         has_fork_parent: session.fork_parent_session_id.is_some(),
         fork_child_count: store.fork_children(&session.key)?.len() as u32,
@@ -910,8 +935,10 @@ pub async fn get_session_analysis(
     agent: String,
     session_id: String,
     wsl_distro: Option<String>,
+    remote_host_id: Option<String>,
 ) -> CommandResult<SessionAnalysis> {
-    run_blocking(move || session_analysis(&app, agent, session_id, wsl_distro)).await
+    run_blocking(move || session_analysis(&app, agent, session_id, wsl_distro, remote_host_id))
+        .await
 }
 
 fn session_analysis(
@@ -919,11 +946,18 @@ fn session_analysis(
     agent: String,
     session_id: String,
     wsl_distro: Option<String>,
+    remote_host_id: Option<String>,
 ) -> CommandResult<SessionAnalysis> {
     let Some(kind) = kind_from_slug(&agent) else {
         return Err(format!("unknown agent {agent}"));
     };
-    let key = SessionKey::for_session(&agent, &session_id, wsl_distro.as_deref());
+    let key = SessionKey::for_origin(
+        &agent,
+        &session_id,
+        wsl_distro.as_deref(),
+        remote_host_id.as_deref(),
+    )
+    .map_err(str::to_owned)?;
     let store = app.state::<Store>();
 
     // Rows are the only way this command computes an analysis: every agent
@@ -964,10 +998,12 @@ fn session_analysis(
         supports_analysis: analysis::analysis_supported(kind),
         title: stored.as_ref().and_then(|record| record.title.clone()),
         wsl_distro,
-        is_active: analysis::is_active(
-            stored.as_ref().and_then(|record| record.updated_at_epoch),
-            scan::unix_now(),
-        ),
+        remote_host_id: remote_host_id.clone(),
+        is_active: remote_host_id.is_none()
+            && analysis::is_active(
+                stored.as_ref().and_then(|record| record.updated_at_epoch),
+                scan::unix_now(),
+            ),
         cost: analysis.cost,
         top_level_cost: analysis.top_level_cost,
         subagents_cost: analysis.subagents_cost,
@@ -979,8 +1015,14 @@ fn session_analysis(
         orchestration,
         relations: (!relations.is_empty()).then_some(relations),
         started_at_epoch: analysis.started_at_epoch,
-        source_path: stored_source_path(stored.as_ref()),
-        project_path: stored_project_path(stored.as_ref()),
+        source_path: remote_host_id
+            .is_none()
+            .then(|| stored_source_path(stored.as_ref()))
+            .flatten(),
+        project_path: remote_host_id
+            .is_none()
+            .then(|| stored_project_path(stored.as_ref()))
+            .flatten(),
         analysis_pending,
         analysis_stale,
     })
@@ -1011,9 +1053,19 @@ pub async fn get_subagent_analysis(
     parent_session_id: String,
     subagent_id: String,
     wsl_distro: Option<String>,
+    remote_host_id: Option<String>,
 ) -> CommandResult<SessionAnalysis> {
-    run_blocking(move || subagent_analysis(&app, agent, parent_session_id, subagent_id, wsl_distro))
-        .await
+    run_blocking(move || {
+        subagent_analysis(
+            &app,
+            agent,
+            parent_session_id,
+            subagent_id,
+            wsl_distro,
+            remote_host_id,
+        )
+    })
+    .await
 }
 
 fn subagent_analysis(
@@ -1022,6 +1074,7 @@ fn subagent_analysis(
     parent_session_id: String,
     subagent_id: String,
     wsl_distro: Option<String>,
+    remote_host_id: Option<String>,
 ) -> CommandResult<SessionAnalysis> {
     let Some(kind) = kind_from_slug(&agent) else {
         return Err(format!("unknown agent {agent}"));
@@ -1032,7 +1085,13 @@ fn subagent_analysis(
     // worker, instead of re-parsing the sub-agent's own transcript
     // in-process.
     let store = app.state::<Store>();
-    let parent_key = SessionKey::for_session(&agent, &parent_session_id, wsl_distro.as_deref());
+    let parent_key = SessionKey::for_origin(
+        &agent,
+        &parent_session_id,
+        wsl_distro.as_deref(),
+        remote_host_id.as_deref(),
+    )
+    .map_err(str::to_owned)?;
     let (analysis, analysis_pending, analysis_stale) = match analysis::subagent_analysis_from_rows(
         &store,
         &parent_key,
@@ -1058,6 +1117,7 @@ fn subagent_analysis(
         supports_analysis: analysis::analysis_supported(kind),
         title: None,
         wsl_distro,
+        remote_host_id: remote_host_id.clone(),
         is_active: false,
         cost: analysis.cost,
         top_level_cost: analysis.top_level_cost,
@@ -1070,7 +1130,10 @@ fn subagent_analysis(
         orchestration: None,
         relations: None,
         started_at_epoch: analysis.started_at_epoch,
-        source_path: analysis.source_path.clone(),
+        source_path: remote_host_id
+            .is_none()
+            .then(|| analysis.source_path.clone())
+            .flatten(),
         project_path: None,
         analysis_pending,
         analysis_stale,
@@ -1149,6 +1212,7 @@ fn resolve_lineage(
                 agent: key.agent.clone(),
                 session_id: parent_id,
                 wsl_distro: wsl_distro.map(str::to_string),
+                remote_host_id: key.remote_host_id().map(str::to_owned),
             },
             title: record.as_ref().and_then(|record| record.title.clone()),
             // A parent we still have a row for is on this machine, mirroring
@@ -1166,6 +1230,7 @@ fn resolve_lineage(
                 agent: key.agent.clone(),
                 session_id: child_id,
                 wsl_distro: wsl_distro.map(str::to_string),
+                remote_host_id: key.remote_host_id().map(str::to_owned),
             },
             title: record.as_ref().and_then(|record| record.title.clone()),
             // A child we still have a row for is on this machine. The retention
@@ -1854,13 +1919,15 @@ pub async fn get_session_hygiene(
         let keys = sessions
             .iter()
             .map(|session| {
-                SessionKey::for_session(
+                SessionKey::for_origin(
                     &session.agent,
                     &session.session_id,
                     session.wsl_distro.as_deref(),
+                    session.remote_host_id.as_deref(),
                 )
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_owned())?;
         let store = app.state::<Store>();
         let rows = store.evidence_batch(&keys).map_err(fail)?;
         let source_generations = store.source_generation_batch(&keys).map_err(fail)?;
@@ -2155,15 +2222,49 @@ pub async fn delete_session_data(
     agent: String,
     session_id: String,
     wsl_distro: Option<String>,
+    remote_host_id: Option<String>,
 ) -> CommandResult<bool> {
-    let key = SessionKey::for_session(&agent, &session_id, wsl_distro.as_deref());
+    let key = SessionKey::for_origin(
+        &agent,
+        &session_id,
+        wsl_distro.as_deref(),
+        remote_host_id.as_deref(),
+    )
+    .map_err(str::to_owned)?;
     let action_app = app.clone();
     let delete_key = key.clone();
+    let host_id = key.remote_host_id().map(str::to_owned);
     let removed = run_blocking(move || {
-        action_app
-            .state::<Store>()
-            .delete_session(&delete_key)
+        if let Some(host_id) = host_id {
+            crate::remote_sync::with_destructive_lifecycle_guard(
+                &action_app,
+                std::slice::from_ref(&host_id),
+                || {
+                    let cached_dir =
+                        action_app
+                            .state::<Store>()
+                            .session(&delete_key)?
+                            .and_then(|record| {
+                                Path::new(&record.source_label)
+                                    .parent()
+                                    .map(Path::to_path_buf)
+                            });
+                    let removed = action_app.state::<Store>().delete_session(&delete_key)?;
+                    if let Some(cached_dir) = cached_dir
+                        && cached_dir.exists()
+                    {
+                        std::fs::remove_dir_all(&cached_dir)?;
+                    }
+                    Ok(removed)
+                },
+            )
             .map_err(fail)
+        } else {
+            action_app
+                .state::<Store>()
+                .delete_session(&delete_key)
+                .map_err(fail)
+        }
     })
     .await?;
     if let Some((incarnation, revision)) = removed {
@@ -2191,12 +2292,15 @@ pub async fn delete_session_data(
 /// number rather than a shrug.
 #[tauri::command]
 pub async fn clear_local_index(app: tauri::AppHandle) -> CommandResult<usize> {
+    let host_ids = crate::remote_sessions::host_ids(&app)?;
     let action_app = app.clone();
     let (removed, revision) = run_blocking(move || {
-        action_app
-            .state::<Store>()
-            .clear_local_session_data()
-            .map_err(fail)
+        crate::remote_sync::with_destructive_lifecycle_guard(&action_app, &host_ids, || {
+            crate::remote_sessions::clear_cached_sessions_fenced(&action_app)
+                .map_err(anyhow::Error::msg)?;
+            action_app.state::<Store>().clear_local_session_data()
+        })
+        .map_err(fail)
     })
     .await?;
     // Report the broad removal and list invalidation before requesting index refill.
@@ -2218,6 +2322,9 @@ pub async fn clear_local_index(app: tauri::AppHandle) -> CommandResult<usize> {
     // leaving a reader looking at an empty list until the next tick.
     app.state::<ScanController>()
         .request(ScanTrigger::IndexCleared);
+    for host_id in crate::remote_sessions::host_ids(&app)? {
+        crate::remote_sync::enqueue_automatic(&app, &host_id);
+    }
     Ok(removed)
 }
 
@@ -2349,6 +2456,17 @@ pub fn open_github_repo(app: tauri::AppHandle) -> CommandResult<()> {
         .map_err(fail)
 }
 
+/// Open the official releases page used by the manual remote-helper setup.
+#[tauri::command]
+pub fn open_remote_helper_downloads(app: tauri::AppHandle) -> CommandResult<()> {
+    app.opener()
+        .open_url(
+            "https://github.com/antiburn/antiburn/releases",
+            None::<&str>,
+        )
+        .map_err(fail)
+}
+
 /// Open the public analytics documentation in the system browser.
 #[tauri::command]
 pub fn open_analytics_documentation(app: tauri::AppHandle) -> CommandResult<()> {
@@ -2444,16 +2562,80 @@ pub async fn recheck_folder_permissions(app: tauri::AppHandle) -> CommandResult<
 /// here today" is a property of the *rest* of the app, and the one call that
 /// hands a string to the operating system should not depend on it.
 #[tauri::command]
-pub fn reveal_source(app: tauri::AppHandle, path: String) -> CommandResult<()> {
+pub fn reveal_source(
+    app: tauri::AppHandle,
+    path: String,
+    remote_host_id: Option<String>,
+) -> CommandResult<()> {
+    if remote_host_id.is_some() {
+        return Err("Cached remote transcripts cannot be opened from this Mac".into());
+    }
     let target = revealable_path(&path)?;
+    reject_remote_cache_path(&app, &target)?;
     app.opener().reveal_item_in_dir(target).map_err(fail)
 }
 
-/// Open an existing directory in the system file manager.
+#[derive(Debug, serde::Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ProjectFolderTarget {
+    Session {
+        environment_key: String,
+        agent: String,
+        session_id: String,
+    },
+    BurnCheck {
+        action_id: String,
+    },
+}
+
+fn session_project_directory(store: &Store, key: &SessionKey) -> CommandResult<PathBuf> {
+    let record = store
+        .session(key)
+        .map_err(fail)?
+        .ok_or_else(|| "The session is no longer available".to_owned())?;
+    let environment = &record.key.environment_key;
+    if environment != "native"
+        && !environment
+            .strip_prefix("wsl:")
+            .is_some_and(|distro| !distro.is_empty())
+    {
+        return Err("This session's project folder cannot be opened on this machine".into());
+    }
+    let path = stored_project_path(Some(&record))
+        .ok_or_else(|| "The session has no local project directory".to_owned())?;
+    project_directory(&path)
+}
+
+/// Resolve the folder from a stored session or an issued check action.
 #[tauri::command]
-pub async fn open_project_folder(app: tauri::AppHandle, path: String) -> CommandResult<()> {
+pub async fn open_project_folder(
+    app: tauri::AppHandle,
+    target: ProjectFolderTarget,
+) -> CommandResult<()> {
     run_blocking(move || {
-        let target = project_directory(&path)?;
+        let target = match target {
+            ProjectFolderTarget::Session {
+                environment_key,
+                agent,
+                session_id,
+            } => session_project_directory(
+                &app.state::<Store>(),
+                &SessionKey::new(environment_key, agent, session_id),
+            )?,
+            ProjectFolderTarget::BurnCheck { action_id } => {
+                let path = app
+                    .state::<RemediationController>()
+                    .project_folder(&app.state::<Store>(), &action_id)
+                    .map_err(|_| "The check's project folder is no longer available".to_owned())?;
+                project_directory(&path)?
+            }
+        };
+        reject_remote_cache_path(&app, &target)?;
         let target = target
             .into_os_string()
             .into_string()
@@ -2461,6 +2643,21 @@ pub async fn open_project_folder(app: tauri::AppHandle, path: String) -> Command
         app.opener().open_path(target, None::<&str>).map_err(fail)
     })
     .await
+}
+
+fn reject_remote_cache_path(app: &tauri::AppHandle, target: &Path) -> CommandResult<()> {
+    let root = crate::remote_sessions::directory(app)?;
+    let root = std::fs::canonicalize(root)
+        .map_err(|_| "Remote session storage is unavailable".to_owned())?;
+    if is_remote_cache_path(target, &root) {
+        Err("Cached remote paths cannot be opened from this Mac".into())
+    } else {
+        Ok(())
+    }
+}
+
+fn is_remote_cache_path(target: &Path, remote_root: &Path) -> bool {
+    target.starts_with(remote_root)
 }
 
 fn project_directory(path: &str) -> CommandResult<PathBuf> {
@@ -3201,6 +3398,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn cached_remote_paths_are_rejected_without_a_renderer_origin_hint() {
+        let root = Path::new("/private/antiburn/remote-sessions");
+        assert!(is_remote_cache_path(
+            Path::new("/private/antiburn/remote-sessions/transcripts/host/session.jsonl"),
+            root,
+        ));
+        assert!(!is_remote_cache_path(
+            Path::new("/private/antiburn/local/session.jsonl"),
+            root,
+        ));
+    }
+
     fn evidence_row(
         status: crate::store::EvidenceStatus,
         evidence: Option<SessionEvidence>,
@@ -3803,6 +4013,91 @@ mod tests {
 #[cfg(test)]
 mod project_folder_tests {
     use super::*;
+
+    #[test]
+    fn project_folder_requires_a_complete_trusted_target() {
+        for value in [
+            serde_json::json!({"path":"/tmp"}),
+            serde_json::json!({"kind":"session","agent":"claude-code","sessionId":"same"}),
+            serde_json::json!({"kind":"session","environmentKey":"ssh:host","agent":"claude-code","sessionId":"same","path":"/tmp"}),
+        ] {
+            assert!(serde_json::from_value::<ProjectFolderTarget>(value).is_err());
+        }
+    }
+
+    #[test]
+    fn session_project_folder_uses_stored_origin_and_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory(dir.path()).unwrap();
+        let mut local = SessionRecord {
+            key: SessionKey::new("native", "claude-code", "same"),
+            source_kind: "file".into(),
+            source_label: "/synthetic/local.jsonl".into(),
+            wsl_distro: None,
+            title: None,
+            title_source: None,
+            cwd: None,
+            surface: "cli".into(),
+            updated_at_epoch: None,
+            activity_cursor: String::new(),
+            activity_source: "unknown".into(),
+            subagent_count: 0,
+            fork_parent_session_id: None,
+            source_fingerprint: None,
+        };
+        local.cwd = Some(dir.path().to_string_lossy().into_owned());
+        let mut remote = local.clone();
+        remote.key.environment_key = "ssh:host".into();
+        remote.source_label = "/synthetic/remote.jsonl".into();
+        let mut unknown = local.clone();
+        unknown.key.environment_key = "unknown".into();
+        unknown.source_label = "/synthetic/unknown.jsonl".into();
+        let mut wsl = local.clone();
+        wsl.key.environment_key = "wsl:ubuntu".into();
+        wsl.wsl_distro = Some("Ubuntu".into());
+        wsl.source_label = "/synthetic/wsl.jsonl".into();
+        store
+            .upsert_sessions(
+                &[local.clone(), remote.clone(), unknown.clone(), wsl.clone()],
+                &crate::agents::evidence_cohort(),
+            )
+            .unwrap();
+        let expected = project_directory(dir.path().to_str().unwrap()).unwrap();
+        assert_eq!(
+            session_project_directory(&store, &local.key).unwrap(),
+            expected
+        );
+        assert_eq!(
+            session_project_directory(&store, &wsl.key).unwrap(),
+            expected
+        );
+        assert!(session_project_directory(&store, &remote.key).is_err());
+        assert!(session_project_directory(&store, &unknown.key).is_err());
+        store.delete_session(&local.key).unwrap();
+        assert!(session_project_directory(&store, &local.key).is_err());
+        wsl.cwd = Some(dir.path().join("missing").to_string_lossy().into_owned());
+        store
+            .upsert_sessions(&[wsl.clone()], &crate::agents::evidence_cohort())
+            .unwrap();
+        assert!(session_project_directory(&store, &wsl.key).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_folder_cache_guard_checks_canonical_aliases() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("remote");
+        std::fs::create_dir(&cache).unwrap();
+        let alias = dir.path().join("alias");
+        std::os::unix::fs::symlink(&cache, &alias).unwrap();
+        let root = std::fs::canonicalize(&cache).unwrap();
+        for path in [&cache, &alias] {
+            assert!(is_remote_cache_path(
+                &project_directory(path.to_str().unwrap()).unwrap(),
+                &root
+            ));
+        }
+    }
 
     #[test]
     fn project_directory_accepts_directories_and_rejects_other_inputs() {

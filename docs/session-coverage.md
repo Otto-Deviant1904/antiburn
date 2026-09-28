@@ -92,6 +92,26 @@ Changed paths use the existing scoped refresh queue and admission limits.
 The full scan remains the fallback for inactive files and WSL sources.
 This changes refresh timing, not accepted source formats or check eligibility.
 
+## Remote Copies
+
+The Linux x64/ARM64 helper discovers only Claude Code and Codex and exports
+their accepted `ClaudeJsonl` and `CodexRolloutJsonl` evidence. Remote support
+does not add a source format or widen the producer/version contracts below.
+The desktop distinguishes hosts with immutable IDs, analyzes explicitly located
+private cache files, and keeps native and WSL discovery separate.
+
+Each listing returns up to 200 supported sessions from seven days, ordered
+newest first within the examined set. Entry, candidate, byte, and elapsed-time
+budgets can truncate discovery before every candidate is examined.
+Listing absence does not prove deletion. Exported transcript, child, fork-parent,
+and supported sidecar inputs must pass the helper's association and
+descriptor-relative admission checks. Symlink components and non-regular files
+are rejected. An incomplete companion search cannot replace a cached bundle.
+Missing or rejected companions remain unavailable or partial; the desktop must
+not substitute this computer's files or current configuration. A synced session
+is a cached copy, not evidence of current remote activity or local quota use.
+See [remote sessions](remote-sessions.md) for setup, transfer bounds, and retention.
+
 ## Review Scope
 
 The reviewed targets are OpenCode, Pi, Codex, Claude Code, and Antigravity.

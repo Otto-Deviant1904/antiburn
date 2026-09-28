@@ -141,6 +141,16 @@ export const SETTINGS_SEARCH_TARGETS = {
     label: "Coding agents",
     aliases: ["harnesses", "enabled agents"],
   },
+  sourceRemoteHosts: {
+    pane: "sources",
+    label: "Remote hosts",
+    aliases: ["ssh", "remote sessions", "other computers"],
+  },
+  sourceAutomaticSync: {
+    pane: "sources",
+    label: "Sync frequency",
+    aliases: ["automatic sync", "remote schedule", "sync interval"],
+  },
   sourceFolders: {
     pane: "sources",
     label: "Scan folders",

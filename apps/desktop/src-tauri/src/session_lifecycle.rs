@@ -1401,6 +1401,9 @@ impl Registry {
     }
 
     fn insert_live(&mut self, key: SessionKey, entry: LiveEntry) {
+        if key.remote_host_id().is_some() {
+            return;
+        }
         self.models.remove(&key);
         self.models.invalidate(&key);
         self.deadlines

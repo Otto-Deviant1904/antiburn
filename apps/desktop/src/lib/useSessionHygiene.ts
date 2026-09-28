@@ -22,33 +22,58 @@ export function sessionHygieneIdentities(
 ): LocalSessionIdentity[] {
   return entries.flatMap((entry) =>
     entry.sessionId
-      ? [{ agent: entry.agent, sessionId: entry.sessionId, wslDistro: entry.wslDistro ?? null }]
+      ? [
+          {
+            agent: entry.agent,
+            sessionId: entry.sessionId,
+            wslDistro: entry.wslDistro ?? null,
+            remoteHostId: entry.remoteHostId ?? null,
+          },
+        ]
       : [],
   )
 }
 
-type IdentityTuple = [agent: string, sessionId: string, wslDistro: string | null]
+type IdentityTuple = [
+  agent: string,
+  sessionId: string,
+  wslDistro: string | null,
+  remoteHostId: string | null,
+]
 
 function identitiesFromKey(requestKey: string): LocalSessionIdentity[] {
-  return (JSON.parse(requestKey) as IdentityTuple[]).map(([agent, sessionId, wslDistro]) => ({
-    agent,
-    sessionId,
-    wslDistro,
-  }))
+  return (JSON.parse(requestKey) as IdentityTuple[]).map(
+    ([agent, sessionId, wslDistro, remoteHostId]) => ({
+      agent,
+      sessionId,
+      wslDistro,
+      remoteHostId,
+    }),
+  )
 }
 
 function createSessionHygieneStore(requestKey: string): ExternalStore<SessionHygieneSnapshot> {
   const sessions = identitiesFromKey(requestKey)
   const requestedKeys = new Set(
     sessions.map((session) =>
-      localSessionKey(session.agent, session.sessionId, session.wslDistro),
+      localSessionKey(
+        session.agent,
+        session.sessionId,
+        session.wslDistro,
+        session.remoteHostId,
+      ),
     ),
   )
   let snapshot = new Map(
     sessions.map(
       (session) =>
         [
-          localSessionKey(session.agent, session.sessionId, session.wslDistro),
+          localSessionKey(
+            session.agent,
+            session.sessionId,
+            session.wslDistro,
+            session.remoteHostId,
+          ),
           INITIAL_SESSION_HYGIENE,
         ] as const,
     ),
@@ -63,7 +88,12 @@ function createSessionHygieneStore(requestKey: string): ExternalStore<SessionHyg
     const next = new Map(snapshot)
     requested.forEach((session, index) => {
       next.set(
-        localSessionKey(session.agent, session.sessionId, session.wslDistro),
+        localSessionKey(
+          session.agent,
+          session.sessionId,
+          session.wslDistro,
+          session.remoteHostId,
+        ),
         payloads[index] ?? INITIAL_SESSION_HYGIENE,
       )
     })
@@ -83,7 +113,12 @@ function createSessionHygieneStore(requestKey: string): ExternalStore<SessionHyg
       const refresh = async (requested: readonly LocalSessionIdentity[]) => {
         for (const session of requested) {
           queued.set(
-            localSessionKey(session.agent, session.sessionId, session.wslDistro),
+            localSessionKey(
+              session.agent,
+              session.sessionId,
+              session.wslDistro,
+              session.remoteHostId,
+            ),
             session,
           )
         }
@@ -110,10 +145,16 @@ function createSessionHygieneStore(requestKey: string): ExternalStore<SessionHyg
             agent: update.entry.agent,
             sessionId: update.entry.sessionId,
             wslDistro: update.entry.wslDistro,
+            remoteHostId: update.entry.remoteHostId ?? null,
           }
           if (
             requestedKeys.has(
-              localSessionKey(identity.agent, identity.sessionId, identity.wslDistro),
+              localSessionKey(
+                identity.agent,
+                identity.sessionId,
+                identity.wslDistro,
+                identity.remoteHostId,
+              ),
             )
           ) {
             void refresh([identity])
@@ -136,8 +177,18 @@ export function useSessionHygiene(
   const requestKey = JSON.stringify([
     ...new Map(
       requestedSessions.map((session) => [
-        localSessionKey(session.agent, session.sessionId, session.wslDistro),
-        [session.agent, session.sessionId, session.wslDistro ?? null] satisfies IdentityTuple,
+        localSessionKey(
+          session.agent,
+          session.sessionId,
+          session.wslDistro,
+          session.remoteHostId,
+        ),
+        [
+          session.agent,
+          session.sessionId,
+          session.wslDistro ?? null,
+          session.remoteHostId ?? null,
+        ] satisfies IdentityTuple,
       ]),
     ).values(),
   ])
@@ -151,7 +202,13 @@ export function sessionHygieneFor(
   identity: LocalSessionIdentity,
 ): SessionHygienePayload {
   return (
-    snapshot.get(localSessionKey(identity.agent, identity.sessionId, identity.wslDistro)) ??
-    INITIAL_SESSION_HYGIENE
+    snapshot.get(
+      localSessionKey(
+        identity.agent,
+        identity.sessionId,
+        identity.wslDistro,
+        identity.remoteHostId,
+      ),
+    ) ?? INITIAL_SESSION_HYGIENE
   )
 }

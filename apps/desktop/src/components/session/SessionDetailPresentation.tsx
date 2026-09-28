@@ -14,6 +14,7 @@ import {
   GitBranchPlus,
   GitFork,
   LoaderCircle,
+  Monitor,
   Moon,
   Trash2,
   WandSparkles,
@@ -99,6 +100,9 @@ interface SessionDetailSubject {
   timestamp?: string
   title?: string
   wslDistro: string | null
+  remoteHostId?: string | null
+  remoteHostName?: string
+  remoteLastSuccessfulSyncEpoch?: number | null
   /**
    * Present when the view is showing a sub-agent rather than a session the
    * user drove themselves.
@@ -705,7 +709,7 @@ export function SessionDetailPresentation({
   const subagent = session.subagent
   const { bindModifiers, modified } = useDiscussionModifiers(
     active && !!onCopyDiscussionPrompt,
-    localSessionKey(session.agent, session.sessionId, session.wslDistro),
+    localSessionKey(session.agent, session.sessionId, session.wslDistro, session.remoteHostId),
   )
   const [tab, setTab] = useState<SessionDetailTab>("overview")
   // Which chart layer the key points at. The pointer sets it and the pointer
@@ -873,7 +877,12 @@ export function SessionDetailPresentation({
   const heroTitle = relations?.title?.trim() || session.title?.trim() || "Session"
   const hostActions = (
     <HostActions
-      sessionKey={localSessionKey(session.agent, session.sessionId, session.wslDistro)}
+      sessionKey={localSessionKey(
+        session.agent,
+        session.sessionId,
+        session.wslDistro,
+        session.remoteHostId,
+      )}
       relations={relations}
       refreshing={refreshing}
       onOpenRelatedSession={onOpenRelatedSession}
@@ -900,13 +909,41 @@ export function SessionDetailPresentation({
           )}
           {active && projectFolder && (
             <ProjectFolderActions
-              key={`${localSessionKey(session.agent, session.sessionId, session.wslDistro)}:${projectFolder.path}`}
+              key={`${localSessionKey(
+                session.agent,
+                session.sessionId,
+                session.wslDistro,
+                session.remoteHostId,
+              )}:${projectFolder.path}`}
               {...projectFolder}
             />
           )}
           <WslOriginBadge distro={session.wslDistro} />
         </div>
       )}
+
+      <div className="flex min-w-0 items-center gap-1.5 type-caption text-label-tertiary">
+        {session.remoteHostId ? (
+          <>
+            <Monitor size={12} className="shrink-0" aria-hidden="true" />
+            <Tooltip label={session.remoteHostName ?? "Remote computer"}>
+              <span className="truncate">
+                Source {session.remoteHostName ?? "Remote computer"}
+              </span>
+            </Tooltip>
+            {session.remoteLastSuccessfulSyncEpoch != null ? (
+              <span className="shrink-0">
+                · Last synced{" "}
+                {relativeTime(
+                  new Date(session.remoteLastSuccessfulSyncEpoch * 1000).toISOString(),
+                )}
+              </span>
+            ) : null}
+          </>
+        ) : (
+          <span>Source Local</span>
+        )}
+      </div>
 
       <h2
         data-view-heading
