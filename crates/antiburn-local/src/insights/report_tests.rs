@@ -537,7 +537,10 @@ fn findings_without_a_denominator_use_a_bounded_fallback() {
 #[test]
 fn fallback_estimates_cover_each_detector_and_stay_bounded() {
     for detector in DetectorId::ALL {
-        let estimate = fallback_token_burn_basis_points(detector, u64::MAX, 1).unwrap();
+        let Some(estimate) = fallback_token_burn_basis_points(detector, u64::MAX, 1) else {
+            assert_eq!(detector, DetectorId::IgnoredInstructions);
+            continue;
+        };
         assert!((1..=MAX_ESTIMATED_TOKEN_BURN_BASIS_POINTS).contains(&estimate));
     }
 }
@@ -876,6 +879,7 @@ fn findings_without_supported_prices_use_fallbacks() {
             Some(400),
             Some(333),
             Some(700),
+            None,
         ]
     );
 }
@@ -936,6 +940,7 @@ fn supported_evidence_estimates_each_check_independently() {
             Some(400),
             Some(333),
             Some(700),
+            None,
         ]
     );
 }
@@ -1798,6 +1803,9 @@ fn unknown_start_and_pending_rows_never_enter_a_detector_denominator() {
     assert_eq!(report.detectors, baseline_report.detectors);
     assert_eq!(report.detector_statuses, baseline_report.detector_statuses);
     for detector in DetectorId::ALL {
+        if detector == DetectorId::IgnoredInstructions {
+            continue;
+        }
         let counts = report.detectors[detector.index()];
         assert!(counts.eligible <= report.assessed_sessions);
         assert!(counts.assessed <= counts.eligible);
@@ -2053,6 +2061,9 @@ fn coverage_contract_partial_sessions_never_read_clean_from_complete_groups() {
         row.capabilities.source_format = format;
         row.coverage = EvidenceCoverage::Partial(CoverageReason::UnrecognizedRecordType);
         for detector in DetectorId::ALL {
+            if detector == DetectorId::IgnoredInstructions {
+                continue;
+            }
             if status_for(row.clone(), detector) == DetectorStatus::Clean {
                 failures.push(format!("{format:?}/{detector:?}"));
             }
@@ -2337,6 +2348,9 @@ fn status_for(row: SessionEvidence, detector: DetectorId) -> DetectorStatus {
 #[test]
 fn clean_facts_are_a_superset_of_finding_facts() {
     for detector in DetectorId::ALL {
+        if detector == DetectorId::IgnoredInstructions {
+            continue;
+        }
         let required = requirements(detector);
         for fact in required.finding {
             assert!(
@@ -2353,6 +2367,9 @@ fn degrading_a_clean_only_fact_to_partial_blocks_clean() {
     // ThreadMembership, which has no partial state), must stop the
     // detector from reading Clean.
     for detector in DetectorId::ALL {
+        if detector == DetectorId::IgnoredInstructions {
+            continue;
+        }
         let baseline = status_for(complete_row("complete"), detector);
         if matches!(
             detector,
@@ -2387,6 +2404,9 @@ fn unsupporting_a_finding_fact_makes_the_session_ineligible() {
     // (b) Every finding fact, set to Unsupported, must make the
     // session ineligible for that detector.
     for detector in DetectorId::ALL {
+        if detector == DetectorId::IgnoredInstructions {
+            continue;
+        }
         assert!(
             eligible(detector, &complete_row("complete")),
             "the undegraded row must be eligible for {detector:?}"
@@ -2561,6 +2581,9 @@ fn trigger_finding(detector: DetectorId, catalogs: &ReportCatalogs) -> SessionEv
         DetectorId::OverpoweredSubagents => {
             unreachable!("no clean-only fact exists for {detector:?}")
         }
+        DetectorId::IgnoredInstructions => {
+            unreachable!("stored assessment findings are tested outside metric evidence")
+        }
     }
     row
 }
@@ -2587,6 +2610,7 @@ fn a_finding_wins_over_a_partial_clean_only_fact_at_report_level() {
                 | DetectorId::UnusedBuiltInTools
                 | DetectorId::UnusedMcpServers
                 | DetectorId::UnusedSkills
+                | DetectorId::IgnoredInstructions
         ) {
             // OverpoweredSubagents has no clean-only fact (see
             // `trigger_finding`'s doc comment). UnusedBuiltInTools,
@@ -2705,6 +2729,9 @@ fn detector_outcomes_partition_the_ready_cohort() {
     }));
 
     for detector in DetectorId::ALL {
+        if detector == DetectorId::IgnoredInstructions {
+            continue;
+        }
         let counts = report.detectors[detector.index()];
         assert_eq!(
             counts.assessed,

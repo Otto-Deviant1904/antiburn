@@ -28,6 +28,7 @@
 //! commit or together with the rows a read returns. An [`Incarnation`] is
 //! the persisted creation identity of one session row.
 
+mod burn_check;
 pub(crate) mod codex_rollout_checkpoint;
 pub mod model;
 pub(crate) mod provider_limit;
@@ -54,13 +55,13 @@ use std::time::Duration;
 
 use antiburn_local::analysis::{
     ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, FenceScope, ModelRun, PARSER_REVISION,
-    PublishedScope, ResumeRevisions, SessionCoverageRecord, StoredResume, TurnFacts, TurnRow,
-    TurnRowError, TurnRowStore, TurnSessionKey, count_turn_rows, delete_source_resume,
-    delete_source_rows_at_fence, delete_stale_source_resume, delete_turn_rows,
-    delete_turn_rows_except_fence, delete_turn_rows_for_fence, insert_coverage_record,
-    insert_source_resume, insert_turn_rows, latest_turn_execution, query_coverage_record,
-    query_model_breakdown, query_model_runs, query_pricing_breakdown, query_source_resume,
-    query_turn_facts, query_turn_rows,
+    PublishedContent, PublishedScope, ResumeRevisions, SessionCoverageRecord, StoredResume,
+    TurnFacts, TurnRow, TurnRowError, TurnRowStore, TurnSessionKey, count_turn_rows,
+    delete_source_resume, delete_source_rows_at_fence, delete_stale_source_resume,
+    delete_turn_rows, delete_turn_rows_except_fence, delete_turn_rows_for_fence,
+    insert_coverage_record, insert_source_resume, insert_turn_rows, latest_turn_execution,
+    query_coverage_record, query_model_breakdown, query_model_runs, query_pricing_breakdown,
+    query_source_resume, query_turn_content_offset, query_turn_facts, query_turn_rows,
 };
 use antiburn_local::discovery::ACTIVE_SESSION_WINDOW_SECS;
 use anyhow::{Context, Result};
@@ -69,6 +70,10 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, params, params_from_ite
 use crate::dto::{BurnCheckSnoozePayload, DeferredPermissionDir};
 use settings::read_settings;
 
+pub use burn_check::{
+    BurnCheckAssessment, BurnCheckCandidate, BurnCheckFailure, BurnCheckHistoryStatus,
+    BurnCheckInput, BurnCheckReservation, BurnCheckUsageSummary, CachedAssessmentResponse,
+};
 pub use model::{
     ActiveCursor, AnalysisRecord, AppSettings, DisabledAgents, DiskSpaceDisplay, EvidenceClaim,
     EvidenceCompletion, EvidenceFailure, EvidenceRow, EvidenceStatus, HiddenMeters, Incarnation,
@@ -659,6 +664,15 @@ impl Store {
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             params![key, value],
         );
+    }
+
+    pub fn set_internal_value_checked(&self, key: &str, value: &str) -> Result<()> {
+        self.lock().execute(
+            "INSERT INTO setting (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
     }
 
     /// Read the burn-check snooze ledger. A missing ledger is empty.
@@ -1959,6 +1973,10 @@ impl Store {
         tx.execute("DELETE FROM session_relation", [])?;
         tx.execute("DELETE FROM remediation_contribution", [])?;
         tx.execute("DELETE FROM remediation", [])?;
+        burn_check::clear_local_burn_check_state(
+            &tx,
+            time::OffsetDateTime::now_utc().unix_timestamp(),
+        )?;
         tx.execute("DELETE FROM session_analysis", [])?;
         tx.execute("DELETE FROM session_evidence", [])?;
         tx.execute("DELETE FROM turn_content", [])?;
@@ -2448,6 +2466,89 @@ impl Store {
             &turn_session_key(key),
             &FenceScope::single(published_fence),
         )?))
+    }
+
+    /// Reads bounded private content from a publication that matches the
+    /// current source generation and parser revision. The evidence lookup,
+    /// freshness check, and content query share one lock.
+    pub fn published_turn_content(&self, key: &SessionKey) -> Result<Option<PublishedContent>> {
+        self.published_turn_content_after(key, None, &Default::default())
+    }
+
+    pub fn published_turn_content_after(
+        &self,
+        key: &SessionKey,
+        after_ms: Option<i64>,
+        positions: &std::collections::BTreeMap<String, u64>,
+    ) -> Result<Option<PublishedContent>> {
+        self.published_turn_content_page(key, after_ms, positions, 0)
+    }
+
+    pub fn published_turn_content_page(
+        &self,
+        key: &SessionKey,
+        after_ms: Option<i64>,
+        positions: &std::collections::BTreeMap<String, u64>,
+        page: usize,
+    ) -> Result<Option<PublishedContent>> {
+        self.published_turn_content_offset(
+            key,
+            after_ms,
+            positions,
+            page.saturating_mul(antiburn_local::analysis::MAX_CONTENT_QUERY_PARTS),
+        )
+    }
+
+    pub fn published_turn_content_offset(
+        &self,
+        key: &SessionKey,
+        after_ms: Option<i64>,
+        positions: &std::collections::BTreeMap<String, u64>,
+        offset: usize,
+    ) -> Result<Option<PublishedContent>> {
+        let connection = self.lock();
+        let Some(evidence) = connection
+            .query_row(
+                EVIDENCE_BY_KEY_SQL,
+                params![key.environment_key, key.agent, key.session_id],
+                evidence_from_row,
+            )
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        let Some(published_fence) = evidence.published_fence else {
+            return Ok(None);
+        };
+        let current: Option<(i64, Option<String>)> = connection
+            .query_row(
+                "SELECT source_generation, source_fingerprint FROM session
+                  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+                params![key.environment_key, key.agent, key.session_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((source_generation, source_fingerprint)) = current else {
+            return Ok(None);
+        };
+        if evidence.status.as_str() != "ready"
+            || evidence.analyzed_generation != Some(source_generation)
+            || evidence.processed_fingerprint != source_fingerprint
+            || evidence.parser_revision != Some(PARSER_REVISION)
+            || evidence.evidence_schema_revision != Some(EVIDENCE_SCHEMA_REVISION)
+        {
+            return Ok(None);
+        }
+        let mut content = query_turn_content_offset(
+            &connection,
+            &turn_session_key(key),
+            &FenceScope::single(published_fence),
+            after_ms,
+            positions,
+            offset,
+        )?;
+        content.source_generation = Some(source_generation);
+        Ok(Some(content))
     }
 
     /// One session's last published [`SessionCoverageRecord`], or `None`
@@ -3473,6 +3574,9 @@ fn delete_session_in(connection: &Connection, key: &SessionKey) -> Result<Option
             |row| row.get::<_, u64>(0),
         )
         .optional()?;
+    if removed.is_some() {
+        burn_check::forget_session_usage_in(connection, key)?;
+    }
     Ok(removed.map(Incarnation))
 }
 

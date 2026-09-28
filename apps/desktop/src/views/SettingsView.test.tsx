@@ -852,10 +852,10 @@ describe("SettingsView", () => {
 
     // The contract's headlines are always on screen as disclosure labels…
     const stored = await screen.findByRole("button", {
-      name: "Visibility data stays on this machine",
+      name: "The session index stays on this machine",
     })
     expect(
-      screen.getByRole("button", { name: "Your work is never uploaded" }),
+      screen.getByRole("button", { name: "When your work can leave this machine" }),
     ).toBeInTheDocument()
 
     // …and each opens into its receipts. Collapsed bodies are unmounted, so
@@ -864,7 +864,11 @@ describe("SettingsView", () => {
     expect(
       await screen.findByText(/may keep session content and derived analysis/i),
     ).toBeInTheDocument()
-    expect(screen.getByText(/nothing in this store is uploaded/i)).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        /optional Ignored Instructions assessment sends selected instruction text/i,
+      ),
+    ).toBeInTheDocument()
     // Deleting a provider's own files is named as a non-feature rather than
     // left as a silence a reader would have to test for.
     expect(screen.getByText(/antiburn cannot do this, by design/i)).toBeInTheDocument()
@@ -1155,7 +1159,7 @@ describe("SettingsView", () => {
     )
 
     expect(
-      await screen.findByRole("button", { name: "Visibility data stays on this machine" }),
+      await screen.findByRole("button", { name: "The session index stays on this machine" }),
     ).toBeInTheDocument()
     expect(screen.getByRole("tab", { name: "Privacy" })).toHaveAttribute(
       "aria-selected",
@@ -1438,6 +1442,7 @@ describe("SettingsView — window chrome", () => {
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
       "General",
       "Sources",
+      "Checks",
       "Notifications",
       "Usage",
       "Appearance",

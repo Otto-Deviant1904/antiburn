@@ -213,12 +213,23 @@ function sessionAccessibleDescription(
 ): string {
   const assessed = counts.failed + counts.passed
   const intro = `${assessed} session burn check${assessed === 1 ? "" : "s"}.`
-  if (counts.failed === 0) return `${intro} All passed.`
-  const titles = checks
+  const failedTitles = checks
     .filter((check) => check.status === "finding")
     .map((check) => sentenceCaseTitle(check.title))
     .join(", ")
-  return `${intro} ${counts.failed} failed: ${titles}.`
+  const otherTitles = checks
+    .filter((check) => check.status !== "finding" && check.status !== "clean")
+    .map((check) => `${check.title}.`)
+  const outcomes = [
+    ...(counts.failed > 0 ? [`${counts.failed} failed: ${failedTitles}.`] : []),
+    ...(counts.passed > 0 && counts.failed === 0 && counts.unassessed === 0
+      ? ["All passed."]
+      : counts.passed > 0
+        ? [`${counts.passed} passed.`]
+        : []),
+    ...otherTitles,
+  ]
+  return `${intro} ${outcomes.join(" ")}`.trim()
 }
 
 export function sessionBurnCheckPresentation(
@@ -242,8 +253,7 @@ export function sessionBurnCheckPresentation(
     refreshFailed: evidenceState === "failed" && counts.failed + counts.passed > 0,
   })
   if (counts.failed + counts.passed === 0) return base
-  const coverage = counts.unassessed > 0 ? [`${counts.unassessed} not assessed`] : []
-  const context = [...coverage, ...base.contextPhrases]
+  const context = base.contextPhrases
   return {
     ...base,
     accessibleDescription: [

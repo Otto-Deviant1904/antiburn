@@ -9,9 +9,10 @@ use antiburn_local::analysis::{
     PARSER_REVISION, SessionEvidence, SourceOrigin, lookup_turn_pricing, pricing_generation,
 };
 use antiburn_local::insights::{
-    CoverageBucket, CoverageCounts, DetectorId, EfficiencyReport, EfficiencyReportAccumulator,
-    ReportCatalogs, ReportContext, ReportWindow, SessionTokenBurnEvidence, TokenBurnSourceEvidence,
-    TokenBurnTurnAccumulator, TokenBurnTurnEvidence,
+    CoverageBucket, CoverageCounts, DetectorFindings, DetectorId, DetectorStatus, EfficiencyReport,
+    EfficiencyReportAccumulator, NotAssessedReason, ReportCatalogs, ReportContext, ReportWindow,
+    SessionExample, SessionTokenBurnEvidence, TokenBurnSourceEvidence, TokenBurnTurnAccumulator,
+    TokenBurnTurnEvidence,
 };
 use antiburn_local::model::AgentKind;
 use antiburn_local::model_catalog::ModelCatalog;
@@ -91,7 +92,8 @@ SELECT bucket, COUNT(*), SUM(awaiting_provider_support), SUM(evidence_pending)
  ORDER BY bucket";
 
 const COHORT_SQL: &str = "
-SELECT e.evidence_json, s.agent, s.session_id, e.published_fence, a.initial_context_json, s.cwd
+SELECT e.evidence_json, s.agent, s.session_id, e.published_fence, a.initial_context_json, s.cwd,
+       s.incarnation, s.source_generation, s.source_fingerprint
   FROM session s
   JOIN session_evidence e
     ON e.environment_key = s.environment_key
@@ -150,12 +152,13 @@ SELECT scope, model, effort, speed, ts_ms, input_tokens, output_tokens,
 
 const CURRENT_FINDINGS_SQL: &str = "
 SELECT e.evidence_json, s.environment_key, s.agent, s.session_id,
-       s.source_generation, e.published_fence, s.source_fingerprint,
+        s.source_generation, e.published_fence, s.source_fingerprint,
        e.processed_fingerprint, e.parser_revision, e.analyzer_revision,
        e.evidence_schema_revision, a.metrics_schema_revision,
        s.started_at_epoch, s.cwd, a.initial_context_json,
         e.effective_model_target_hash, e.effective_model_scope, e.effective_model,
-        e.effective_reasoning_target_hash, e.effective_reasoning_scope, e.effective_reasoning
+        e.effective_reasoning_target_hash, e.effective_reasoning_scope, e.effective_reasoning,
+        s.incarnation
   FROM session s
   JOIN session_evidence e
     ON e.environment_key = s.environment_key
@@ -183,7 +186,8 @@ SELECT e.evidence_json, s.environment_key, s.agent, s.session_id,
        e.evidence_schema_revision, a.metrics_schema_revision,
        s.started_at_epoch, s.cwd, a.initial_context_json,
         e.effective_model_target_hash, e.effective_model_scope, e.effective_model,
-        e.effective_reasoning_target_hash, e.effective_reasoning_scope, e.effective_reasoning
+        e.effective_reasoning_target_hash, e.effective_reasoning_scope, e.effective_reasoning,
+        s.incarnation
   FROM session s
   JOIN session_evidence e
     ON e.environment_key = s.environment_key
@@ -217,6 +221,193 @@ pub struct ReducedReport {
     pub(crate) resources: ResourceAssessment,
 }
 
+/// Read the same current assessment used by the report for a bounded session list.
+pub(crate) fn ignored_instruction_session_statuses(
+    data_dir: &Path,
+    keys: &[crate::store::SessionKey],
+) -> Result<Vec<crate::dto::IgnoredInstructionSessionStatus>> {
+    let connection = open_read_only(data_dir, REPORT_BUSY_TIMEOUT)?;
+    let sql = "SELECT e.evidence_json, s.incarnation, s.source_generation,
+                s.source_fingerprint, e.published_fence, e.status,
+                 (e.analyzed_generation = s.source_generation
+                  AND e.parser_revision = ?4 AND e.analyzer_revision = ?5
+                  AND e.evidence_schema_revision = ?6),
+                 EXISTS (
+                     SELECT 1 FROM turn_content AS content
+                     JOIN turn AS content_turn ON content_turn.rowid = content.turn_rowid
+                     WHERE content_turn.environment_key = s.environment_key
+                       AND content_turn.agent = s.agent
+                       AND content_turn.session_id = s.session_id
+                       AND content.kind <> 'thinking' AND length(content.content) > 0
+                 )
+           FROM session s LEFT JOIN session_evidence e
+             ON e.environment_key = s.environment_key AND e.agent = s.agent
+            AND e.session_id = s.session_id
+          WHERE s.environment_key = ?1 AND s.agent = ?2 AND s.session_id = ?3
+             AND EXISTS (SELECT 1 FROM setting WHERE key = 'internal:burnChecksEnabledAtEpochV1')"
+        .to_owned();
+    let mut statement = connection.prepare(&sql)?;
+    keys.iter()
+        .map(|key| {
+            let row = statement
+                .query_row(
+                    params![
+                        key.environment_key,
+                        key.agent,
+                        key.session_id,
+                        PARSER_REVISION,
+                        ANALYZER_REVISION,
+                        EVIDENCE_SCHEMA_REVISION
+                    ],
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<String>>(0)?,
+                            row.get::<_, u64>(1)?,
+                            row.get::<_, i64>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                            row.get::<_, Option<i64>>(4)?,
+                            row.get::<_, Option<String>>(5)?,
+                            row.get::<_, Option<bool>>(6)?,
+                            row.get::<_, bool>(7)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            let Some((
+                json,
+                incarnation,
+                generation,
+                fingerprint,
+                fence,
+                status,
+                current,
+                has_content,
+            )) = row
+            else {
+                return Ok(ignored_session_status(
+                    crate::dto::SessionHygieneStatus::Checking,
+                    Some("Waiting for current session evidence."),
+                ));
+            };
+            if !has_content {
+                return Ok(ignored_session_status(
+                    crate::dto::SessionHygieneStatus::NotAssessed,
+                    Some("This session has no saved content to check."),
+                ));
+            }
+            let Some(json) = json else {
+                return Ok(ignored_session_status(
+                    crate::dto::SessionHygieneStatus::Checking,
+                    Some("Waiting for current session evidence."),
+                ));
+            };
+            if status.as_deref() == Some("unsupported") {
+                return Ok(ignored_session_status(
+                    crate::dto::SessionHygieneStatus::CouldntCheck,
+                    Some("This session source format is not supported."),
+                ));
+            }
+            if status.as_deref() == Some("failed") {
+                return Ok(ignored_session_status(
+                    crate::dto::SessionHygieneStatus::CouldntCheck,
+                    Some("Could not read complete session evidence."),
+                ));
+            }
+            if current != Some(true) || status.as_deref() != Some("ready") {
+                return Ok(ignored_session_status(
+                    crate::dto::SessionHygieneStatus::Checking,
+                    Some("Waiting for current session evidence."),
+                ));
+            }
+            let Some(fence) = fence else {
+                return Ok(ignored_session_status(
+                    crate::dto::SessionHygieneStatus::Checking,
+                    Some("Waiting for published session evidence."),
+                ));
+            };
+            let evidence: SessionEvidence = serde_json::from_str(&json)?;
+            let result = findings::ignored_instruction_result_for(
+                &connection,
+                &evidence,
+                findings::IgnoredInstructionSessionIdentity {
+                    environment_key: &key.environment_key,
+                    agent: &key.agent,
+                    session_id: &key.session_id,
+                    incarnation,
+                    source_generation: generation,
+                    source_fingerprint: fingerprint.as_deref(),
+                    published_fence: fence,
+                },
+            )?;
+            let Some(result) = result else {
+                return Ok(ignored_session_status(
+                    crate::dto::SessionHygieneStatus::Checking,
+                    Some("Waiting for a current instruction assessment."),
+                ));
+            };
+            let Some(session_findings) =
+                findings::ignored_instruction_findings_for_evidence(&evidence, &result)
+            else {
+                return Ok(ignored_session_status(
+                    crate::dto::SessionHygieneStatus::CouldntCheck,
+                    Some("The current instruction assessment is unavailable."),
+                ));
+            };
+            if !session_findings.is_empty() {
+                Ok(ignored_session_status(
+                    crate::dto::SessionHygieneStatus::Finding,
+                    None,
+                ))
+            } else if ignored_result_has_scoped_no_issues(&result, &session_findings) {
+                Ok(ignored_session_status(
+                    crate::dto::SessionHygieneStatus::Clean,
+                    None,
+                ))
+            } else {
+                Ok(ignored_session_status(
+                    crate::dto::SessionHygieneStatus::CouldntCheck,
+                    Some(ignored_assessment_reason(&result)),
+                ))
+            }
+        })
+        .collect()
+}
+
+fn ignored_session_status(
+    status: crate::dto::SessionHygieneStatus,
+    reason: Option<&'static str>,
+) -> crate::dto::IgnoredInstructionSessionStatus {
+    crate::dto::IgnoredInstructionSessionStatus { status, reason }
+}
+
+fn ignored_assessment_reason(
+    result: &antiburn_local::analysis::ignored_instructions::AssessmentResult,
+) -> &'static str {
+    if result.coverage.processing_limit_reached || result.coverage.unselected_pairs > 0 {
+        "The assessment limit prevented checking every eligible rule and action."
+    } else if result
+        .coverage
+        .limitations
+        .contains(&"current_file_not_historical_proof".to_owned())
+    {
+        "Current instruction files do not prove which rules applied during this session."
+    } else if result
+        .coverage
+        .limitations
+        .contains(&"source_evidence_is_partial".to_owned())
+    {
+        "The session evidence is incomplete."
+    } else if !result.pending_rules.is_empty() {
+        "The session has no observed completion boundary for an eventual instruction."
+    } else if !result.unassessed_comparisons.is_empty() {
+        "Some instruction comparisons did not reach a result."
+    } else if result.coverage.selected_comparisons == 0 {
+        "No eligible instruction and action comparison was available."
+    } else {
+        "The available assessment evidence is incomplete."
+    }
+}
+
 /// Selects one detector's current findings in a bounded report window.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CurrentFindingsRequest {
@@ -233,6 +424,7 @@ pub struct CurrentFinding {
     pub agent: String,
     pub session_id: String,
     pub source_generation: i64,
+    pub incarnation: u64,
     pub published_fence: i64,
     pub source_fingerprint: Option<String>,
     pub processed_fingerprint: Option<String>,
@@ -332,6 +524,14 @@ fn reduce_with_state_on_snapshot(
     }
     let repository_roots = trusted_repository_roots(&transaction, &mut resource_builder)?;
     let mut inventory_contexts = BTreeSet::new();
+    let mut ignored_finding_sessions = 0_u64;
+    let mut ignored_eligible = 0_u64;
+    let mut ignored_assessed = 0_u64;
+    let mut ignored_clean = 0_u64;
+    let mut ignored_clean_agents = BTreeSet::new();
+    let mut ignored_unavailable = 0_u64;
+    let mut ignored_not_applicable = 0_u64;
+    let mut ignored_examples = Vec::new();
     let depth_cap = u128::from(accumulator.catalogs().depth_cap_tokens);
     let cohort_sql = COHORT_SQL.replace("{current}", CURRENT_EVIDENCE_PREDICATE);
     {
@@ -356,6 +556,55 @@ fn reduce_with_state_on_snapshot(
             let published_fence: i64 = row.get(3)?;
             let initial_context_json: Option<String> = row.get(4)?;
             let cwd: Option<String> = row.get(5)?;
+            let incarnation: u64 = row.get(6)?;
+            let source_generation: i64 = row.get(7)?;
+            let source_fingerprint: Option<String> = row.get(8)?;
+            if antiburn_local::analysis::ignored_instructions::source_supported(
+                evidence.capabilities.source_format,
+            ) {
+                ignored_eligible += 1;
+                let result = findings::ignored_instruction_result_for(
+                    &transaction,
+                    &evidence,
+                    findings::IgnoredInstructionSessionIdentity {
+                        environment_key: &request.environment_key,
+                        agent: &agent,
+                        session_id: &session_id,
+                        incarnation,
+                        source_generation,
+                        source_fingerprint: source_fingerprint.as_deref(),
+                        published_fence,
+                    },
+                )?;
+                let findings = result.as_ref().and_then(|result| {
+                    findings::ignored_instruction_findings_for_evidence(&evidence, result)
+                        .map(|findings| (result, findings))
+                });
+                match findings {
+                    Some((_, session_findings)) if !session_findings.is_empty() => {
+                        ignored_assessed += 1;
+                        ignored_finding_sessions += 1;
+                        if ignored_examples.len()
+                            < antiburn_local::insights::MAX_EXAMPLES_PER_DETECTOR
+                        {
+                            ignored_examples.push(SessionExample {
+                                agent: agent.clone(),
+                                session_id: session_id.clone(),
+                            });
+                        }
+                    }
+                    Some((result, session_findings))
+                        if ignored_result_has_scoped_no_issues(result, &session_findings) =>
+                    {
+                        ignored_assessed += 1;
+                        ignored_clean += 1;
+                        ignored_clean_agents.insert(agent.clone());
+                    }
+                    _ => ignored_unavailable += 1,
+                }
+            } else {
+                ignored_not_applicable += 1;
+            }
             let agent_kind = crate::agents::kind_from_slug(&agent);
             let project_root = cwd
                 .as_deref()
@@ -485,7 +734,7 @@ fn reduce_with_state_on_snapshot(
     }
 
     ensure_not_cancelled(cancel)?;
-    let report = accumulator.finish(ReportContext {
+    let mut report = accumulator.finish(ReportContext {
         environment_key: request.environment_key,
         window: request.window,
         computed_at_epoch: request.computed_at_epoch,
@@ -494,6 +743,19 @@ fn reduce_with_state_on_snapshot(
         evidence_schema_revision: EVIDENCE_SCHEMA_REVISION,
         coverage,
     });
+    apply_ignored_instruction_counts(
+        &mut report,
+        IgnoredInstructionReportCounts {
+            eligible: ignored_eligible,
+            assessed: ignored_assessed,
+            clean: ignored_clean,
+            clean_agents: ignored_clean_agents,
+            unavailable: ignored_unavailable,
+            not_applicable: ignored_not_applicable,
+            finding_sessions: ignored_finding_sessions,
+            examples: ignored_examples,
+        },
+    );
     turn_probe();
     ensure_not_cancelled(cancel)?;
     ensure!(
@@ -525,6 +787,68 @@ fn reduce_with_state_on_snapshot(
         pending_evidence,
         resources,
     })
+}
+
+fn ignored_result_has_scoped_no_issues(
+    result: &antiburn_local::analysis::ignored_instructions::AssessmentResult,
+    findings: &[Finding],
+) -> bool {
+    findings.is_empty()
+        && result.coverage.unselected_pairs == 0
+        && result.coverage.skipped_rules.is_empty()
+        && result.coverage.skipped_actions.is_empty()
+        && !result.coverage.processing_limit_reached
+        && result.coverage.limitations.is_empty()
+        && result.pending_rules.is_empty()
+        && result.unassessed_comparisons.is_empty()
+}
+
+struct IgnoredInstructionReportCounts {
+    eligible: u64,
+    assessed: u64,
+    clean: u64,
+    clean_agents: BTreeSet<String>,
+    unavailable: u64,
+    not_applicable: u64,
+    finding_sessions: u64,
+    examples: Vec<SessionExample>,
+}
+
+fn apply_ignored_instruction_counts(
+    report: &mut EfficiencyReport,
+    ignored: IgnoredInstructionReportCounts,
+) {
+    let detector = DetectorId::IgnoredInstructions;
+    let index = detector.index();
+    let counts = &mut report.detectors[index];
+    counts.eligible = ignored.eligible;
+    counts.assessed = ignored.assessed;
+    counts.finding = ignored.finding_sessions;
+    counts.clean = ignored.clean;
+    counts.unavailable = ignored.unavailable;
+    counts.not_applicable = ignored.not_applicable;
+    report.finding_agents[index] = ignored
+        .examples
+        .iter()
+        .map(|example| example.agent.clone())
+        .collect();
+    report.clean_agents[index] = ignored.clean_agents;
+    report.detector_statuses[index] = if ignored.finding_sessions > 0 {
+        DetectorStatus::Findings(DetectorFindings {
+            finding_sessions: ignored.finding_sessions,
+            examples: ignored.examples,
+        })
+    } else if ignored.eligible > 0 && ignored.unavailable == 0 && ignored.clean == ignored.eligible
+    {
+        DetectorStatus::Clean
+    } else {
+        DetectorStatus::NotAssessed(if ignored.eligible == 0 {
+            NotAssessedReason::CapabilityMissing
+        } else {
+            NotAssessedReason::IncompleteEvidence
+        })
+    };
+    report.detector_estimated_token_burn_basis_points[index] = None;
 }
 
 fn trusted_repository_roots(
@@ -909,7 +1233,42 @@ pub(crate) mod tests {
     };
 
     #[test]
-    fn publication_cap_gives_all_nine_detectors_an_opportunity() {
+    fn complete_assessment_with_no_eligible_pairs_is_a_scoped_clean_result() {
+        let mut result = antiburn_local::analysis::ignored_instructions::AssessmentResult {
+            input_revision: "complete-input".into(),
+            model_version: "synthetic-model".into(),
+            findings: Vec::new(),
+            pending_rules: Vec::new(),
+            unassessed_comparisons: Vec::new(),
+            coverage: antiburn_local::analysis::ignored_instructions::AssessmentCoverage {
+                eligible_rules: 0,
+                candidate_pairs: 0,
+                selected_comparisons: 0,
+                unselected_pairs: 0,
+                skipped_rules: Vec::new(),
+                skipped_actions: Vec::new(),
+                processing_limit_reached: false,
+                limitations: Vec::new(),
+                reassessed_comparison_ids: Vec::new(),
+                reassessed_rule_ids: Vec::new(),
+                instruction_sources: Vec::new(),
+            },
+            request_count: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+        };
+
+        assert!(ignored_result_has_scoped_no_issues(&result, &[]));
+
+        result
+            .coverage
+            .limitations
+            .push("source_evidence_is_partial".into());
+        assert!(!ignored_result_has_scoped_no_issues(&result, &[]));
+    }
+
+    #[test]
+    fn publication_cap_gives_all_ten_detectors_an_opportunity() {
         let buckets = DetectorId::ALL
             .into_iter()
             .map(|detector| (0..150).map(move |index| (detector, index)).collect())
@@ -924,7 +1283,7 @@ pub(crate) mod tests {
                     .iter()
                     .filter(|(found, _)| *found == detector)
                     .count(),
-                11 + usize::from(detector.index() < 1),
+                10,
             );
         }
         assert_eq!(selected[0], (DetectorId::SessionsOverDepth, 0));

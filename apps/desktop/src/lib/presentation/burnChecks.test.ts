@@ -82,6 +82,20 @@ describe("sessionBurnCheckPresentation", () => {
     expect(value.accessibleDescription).toContain("2 session burn checks")
   })
 
+  it("never describes an incomplete result as all passed", () => {
+    const value = sessionBurnCheckPresentation(
+      [
+        { status: "clean", title: "Instructions followed" },
+        { status: "checking", title: "Checking instructions" },
+      ],
+      "ready",
+    )
+
+    expect(value.accessibleDescription).toBe(
+      "1 session burn check. 1 passed. Checking instructions. Evidence incomplete.",
+    )
+  })
+
   it.each([
     ["pending", "Running Burn Checks…"],
     ["processing", "Running Burn Checks…"],
@@ -122,7 +136,7 @@ describe("sessionBurnCheckPresentation", () => {
       "stale",
     )
     expect(value.accessibleDescription).toBe(
-      "2 session burn checks. 2 failed: session overdepth detected, MCP setup issue. 1 not assessed. Refreshing. Evidence incomplete.",
+      "2 session burn checks. 2 failed: session overdepth detected, MCP setup issue. Unknown. Refreshing. Evidence incomplete.",
     )
   })
 

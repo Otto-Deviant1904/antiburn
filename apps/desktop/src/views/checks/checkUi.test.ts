@@ -44,6 +44,16 @@ describe("check row presentation", () => {
     })
   })
 
+  it("uses the ordinary failed-session wording for ignored instructions", () => {
+    expect(
+      checkRowPresentation(category({ id: "ignoredInstructions", finding: 2, clean: 0 })),
+    ).toMatchObject({
+      label: "Ignored Instructions",
+      summary: "2/2 sessions failed",
+      metric: null,
+    })
+  })
+
   it("provides the shared passed row content and status colors", () => {
     expect(
       checkRowPresentation(
@@ -56,6 +66,20 @@ describe("check row presentation", () => {
       iconTone: "bg-system-green/10 text-system-green",
       metricTone: "text-system-green",
     })
+  })
+
+  it("keeps an in-progress instruction row passed until it has a finding", () => {
+    expect(
+      checkRowPresentation(
+        category({
+          id: "ignoredInstructions",
+          finding: 0,
+          clean: 0,
+          unavailable: 7,
+          lifecycle: "passing",
+        }),
+      ),
+    ).toMatchObject({ summary: "Passed", metric: null })
   })
 
   it("keeps an independent token burn metric for every failed check", () => {

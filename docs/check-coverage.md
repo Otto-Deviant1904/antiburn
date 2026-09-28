@@ -1,6 +1,6 @@
 # Burn Check Source Coverage
 
-Audit date: 2026-09-23.
+Audit date: 2026-09-28.
 
 This document covers local passive session evidence and the desktop's read-only
 current resource inventory. Session evidence supports historical claims. Current
@@ -40,6 +40,7 @@ release. A clean result still needs complete session facts and eligible activity
 | O    | Old model usage       |
 | F    | Fast mode overuse     |
 | C    | Cache churn           |
+| I    | Ignored Instructions  |
 
 ## Source Inventory
 
@@ -90,6 +91,10 @@ This manual matrix records implemented eligibility and audited source limits,
 not just binary capability flags. The inventory test checks keys and cell
 vocabulary; behavior tests separately check finding and clean gates.
 
+Ignored Instructions has separate evidence coverage below. Its input contract
+uses retained session content and instruction snapshots, not the metric gates
+in this matrix.
+
 | `SourceFormat`                 | D           | T           | S           | M           | B           | K           | O           | F           | C           |
 | ------------------------------ | ----------- | ----------- | ----------- | ----------- | ----------- | ----------- | ----------- | ----------- | ----------- |
 | `ClaudeJsonl`                  | Assessable  | Assessable  | Assessable  | Partial     | Partial     | Partial     | Assessable  | Assessable  | Assessable  |
@@ -126,6 +131,17 @@ vocabulary; behavior tests separately check finding and clean gates.
 | `DevinLocalSqlite`             | Unsupported | Unsupported | Partial     | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported |
 | `Uncharacterized`              | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     | Unknown     |
 
+## Ignored Instructions Evidence
+
+The first-tier product matrix is the source of truth for reachable check
+support. Its six supported formats are `ClaudeJsonl`, `CodexRolloutJsonl`,
+`OpenCodeSqliteV2`, `PiV3Jsonl`, `CursorCliAgentJsonl`, and
+`AntigravityBrainJsonl`. Other formats are unavailable for this check. A scoped
+Passed result requires complete current evidence, every eligible rule/action
+comparison, no pending or unassessed comparison, and historically grounded
+instruction provenance. Current-file comparisons cannot establish a historical
+clean result. Auto Fix, verification, and estimates are unsupported.
+
 ## First-Tier Product Matrix
 
 Support means reachable product behavior, not a parser flag or an unused engine
@@ -143,8 +159,72 @@ verification, a reachable inventory target before it accepts an M/B/K prompt,
 and production editor policy plus a typed target operation before it accepts
 Auto Fix. The limit stays beside the row it qualifies.
 
+Ignored Instructions uses stored Jev assessments and the current published
+content projection. Finding, scoped clean, and prompt support is limited to the
+six exact source formats listed below. A clean claim covers only selected
+post-enable activity and the assessed instruction snapshot. It requires complete
+source evidence, every candidate pair selected and assessed (or complete input
+with no eligible pair), no skipped rules,
+pending obligations, limits, or unresolved comparisons, and non-current-file
+instruction provenance. Current-file-only comparisons cannot establish
+historical availability and do not produce clean status. Auto Fix, verification,
+and estimates are unsupported. The check requires a user-supplied
+TypeSafe API key and sends selected instruction text, assistant text excerpts,
+and complete normalized tool-input parts to TypeSafe. This includes shell
+commands and structured arguments. Tool-result text is removed before
+assessment. Candidate rule/action pairs are visited in a stable
+diagonal order and processed in bounded, resumable batches until all eligible
+pairs and content pages are covered. Long instruction and action text is split
+into overlapping byte ranges; every range is submitted. Lexical overlap ranks
+only earlier context for follow-up requests. A request's physical size remains
+bounded, but no cumulative request or page count excludes later work.
+Requests retain the rule text, provenance, scope, candidate action, and bounded
+same-branch evidence. One event window groups up to four rule targets around a
+candidate action, so the request sends shared event text once instead of
+repeating it for each rule. Instruction-file paths, line locations, and stable
+event IDs stay local. Earlier context is sent in source order within its array.
+Candidate actions include normalized assistant text (`assistant` content kind)
+and complete normalized tool-input text. Tool results have no assessed text and
+do not create candidate work. Pages interleave rules from each instruction
+source so a large global file cannot starve project rules. All six
+first-tier agents include shared global and project AGENTS.md files alongside
+their supported agent-specific sources. The Markdown reader uses headings and
+list structure to bound rule text; it does not infer semantic rule types from
+keyword lists. Jev answers applicability, the action's relationship after the
+instruction's stated conditions and exceptions, whether omitted evidence could
+change that conclusion, and whether a completion-bound obligation lacks a
+completion boundary. A possible finding requires Jev probabilities of at least
+0.85 for applicability and conflict. If source, action, or context evidence is
+incomplete, it also requires at least 0.85 probability that the supplied
+evidence proves the result without omitted material; a likely finding uses 0.90
+and the existing stronger source/action gate. A completion-bound answer can
+mark a rule pending. The reducer leaves conclusions that depend on omitted
+evidence unassessed. Truncated context does not block a direct conflict when
+supplied evidence establishes it. Partial assessment cannot support a clean
+result.
+
+The content reader orders events by their source positions and divides large
+sessions into bounded pages. If an older page may contain a required earlier
+step, the worker carries the newer candidate and its source identity forward.
+It adds matching earlier events from each older page and assesses the candidate
+again. The worker clears an earlier unassessed result only after the new page
+covers that candidate. Missing pages never prove that an approval or
+prerequisite did not happen.
+New activity is assessed after three minutes of inactivity. Settings can also
+queue sessions active in the selected 7-day or 30-day window. Historical runs
+freeze a cohort for Settings progress. Unchanged completed sessions are not
+requeued by another click; due failures, changed activity, or a new evaluator
+revision can be selected again. Historical runs use the same source and evidence
+limits; they do not establish complete history outside the selected window.
+
 | Agent       | Check | Finding | Prompt | Auto Fix | Verification | Estimate | Reachability limit                                                                                                                           |
 | ----------- | ----- | ------- | ------ | -------- | ------------ | -------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Claude Code | I     | Y       | Y      | N        | N            | N        | `ClaudeJsonl` only; clean is scoped to complete current evidence and historically grounded instructions.                                     |
+| Codex       | I     | Y       | Y      | N        | N            | N        | `CodexRolloutJsonl` only; clean is scoped to complete current evidence and historically grounded instructions.                               |
+| OpenCode    | I     | Y       | Y      | N        | N            | N        | `OpenCodeSqliteV2` only; JSONL export is not enabled; clean needs complete evidence and historical instruction provenance.                    |
+| Pi          | I     | Y       | Y      | N        | N            | N        | `PiV3Jsonl` only; clean is scoped to complete current evidence and historically grounded instructions.                                       |
+| Cursor      | I     | Y       | Y      | N        | N            | N        | `CursorCliAgentJsonl` only; other Cursor formats are not enabled; clean needs complete evidence and historical instruction provenance.        |
+| Antigravity | I     | Y       | Y      | N        | N            | N        | `AntigravityBrainJsonl` only; clean needs complete retained evidence and historically grounded instructions.                                  |
 | Claude Code | D     | Y       | Y      | Y        | N            | Y        | Auto Fix needs one supported current compaction control.                                                                                     |
 | Claude Code | T     | Y       | Y      | Y        | Y            | Y        | Verification needs a later complete lower control on the same route and model.                                                               |
 | Claude Code | S     | Y       | Y      | Y        | N            | Y        | Auto Fix needs one exact named agent definition.                                                                                             |
@@ -662,20 +742,20 @@ each operation still needs an exact target binding at runtime.
 
 | `SourceFormat`                 | Prompt checks     | Model Auto Fix | Reasoning Auto Fix | Other Auto Fix checks | Verification checks |
 | ------------------------------ | ----------------- | -------------- | ------------------ | --------------------- | ------------------- |
-| `ClaudeJsonl`                  | D/T/S/M/B/K/O/F/C | O              | T                  | D/S/M/B/K/F           | T/O/F               |
-| `CodexRolloutJsonl`            | D/T/S/M/B/K/O/F/C | O              | T                  | D/S/M/K/F             | T/O/F               |
+| `ClaudeJsonl`                  | D/T/S/M/B/K/O/F/C/I | O              | T                  | D/S/M/B/K/F           | T/O/F               |
+| `CodexRolloutJsonl`            | D/T/S/M/B/K/O/F/C/I | O              | T                  | D/S/M/K/F             | T/O/F               |
 | `OpenCodeJsonl`                | D/S/M/B/K/O/C     | O              | None               | D/S/M/K               | O                   |
-| `OpenCodeSqliteV2`             | D/S/M/B/K/O/C     | O              | None               | D/S/M/K               | O                   |
-| `PiV3Jsonl`                    | D/T/S/M/K/O/C     | O              | T                  | D                     | T/O                 |
+| `OpenCodeSqliteV2`             | D/S/M/B/K/O/C/I   | O              | None               | D/S/M/K               | O                   |
+| `PiV3Jsonl`                    | D/T/S/M/K/O/C/I   | O              | T                  | D                     | T/O                 |
 | `OmpV3Jsonl`                   | None              | None           | None               | None                  | None                |
 | `CursorJsonl`                  | O                 | None           | None               | None                  | None                |
-| `CursorCliAgentJsonl`          | O                 | None           | None               | None                  | None                |
+| `CursorCliAgentJsonl`          | O/I               | None           | None               | None                  | None                |
 | `CursorCliStoreDb`             | O                 | None           | None               | None                  | None                |
 | `CursorChatStoreDb`            | O                 | None           | None               | None                  | None                |
 | `CursorIdeComposer`            | O                 | None           | None               | None                  | None                |
 | `CursorLegacyChatJson`         | None              | None           | None               | None                  | None                |
 | `AntigravityJson`              | D/O               | None           | None               | None                  | None                |
-| `AntigravityBrainJsonl`        | D/O               | None           | None               | None                  | None                |
+| `AntigravityBrainJsonl`        | D/O/I             | None           | None               | None                  | None                |
 | `AntigravityCascadeJson`       | D/O               | None           | None               | None                  | None                |
 | `AntigravityWorkspaceChatJson` | None              | None           | None               | None                  | None                |
 | `AntigravitySqlite`            | D/O               | None           | None               | None                  | None                |

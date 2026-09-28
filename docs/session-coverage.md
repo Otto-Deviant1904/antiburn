@@ -1,11 +1,11 @@
 # Session Parsing Coverage
 
-Audit date: 2026-09-16.
+Audit date: 2026-09-28.
 
 This document records how Antiburn discovers and parses local session sources.
 It covers source identity, framing, companion data, normalized facts, and
 provider-route extraction. See [`check-coverage.md`](check-coverage.md) for the
-nine burn checks that can use those facts.
+ten burn checks that can use those facts.
 
 This is a living contract. A discovered path does not prove that its contents
 are understood. A parsed field can support a scoped result without proving full
@@ -38,6 +38,74 @@ interpretation that can produce clean. A known shape need not have a universal
 release range: an accepted schema, header, or pinned producer commit with
 synthetic fixtures can define its contract. This does not prove all historical
 versions. Full and resumed reads must agree where resume is supported.
+
+Private message content remains in `turn_content`; it does not join ordinary
+turn, metrics, or report queries. The dedicated published-content query reads
+only the winning publication under the store lock and caps output at 256 parts
+and 1 MiB. It returns explicit truncation and omission flags. Each part retains
+source authority and available native tool name/call ID. Thinking remains
+stored locally but shared Ignored Instructions preparation excludes it.
+Existing rows migrated before turn schema V9 have `unknown` content authority
+and no reconstructed tool joins.
+
+The Ignored Instructions preparation and its agent-specific file discovery live
+under `analysis::ignored_instructions`. File reads and directory traversal use
+async filesystem APIs. The scan caps each file at 128 KiB, all instruction text
+at 512 KiB, the source set at 64 files, imports at eight levels, and rule trees
+at four levels, 128 directories, and 256 entries per directory. Content-derived
+digests bind the selected normalized messages, instruction snapshots, parser
+revision, and publication fence. A complete directory scan means only that the
+adapter finished its known paths; it does not establish historical activation.
+Markdown lists with more than 256 top-level items stay grouped as one rule
+block to avoid repeating shared context; the assessment still sends every
+overlapping text range from that block.
+Leading YAML frontmatter is kept in the full source digest and attached to its
+rule sections instead of becoming a separate requirement. The section line
+ranges keep their original file line numbers. Agent adapters retain any
+frontmatter-derived conditional scope, such as a Claude `paths` rule; the
+frontmatter text remains visible to Jev with the instruction it scopes.
+
+Instruction-source adapters use these current file contracts: Claude loads
+project/user `CLAUDE.md`, local variants, `.claude/rules/*.md`, and bounded local
+`@path` imports; AGENTS applicability remains conditional when Claude's file
+selection setting or version is not known. Codex follows AGENTS override
+precedence and reads `project_doc_fallback_filenames` from `CODEX_HOME/config.toml`.
+Pi reads hierarchical AGENTS/CLAUDE context files and project/user SYSTEM and
+APPEND_SYSTEM files. OpenCode follows AGENTS then CLAUDE fallback and reads
+literal local paths from strict-JSON `instructions` arrays. OpenCode JSONC
+configuration, remote URLs, and config globs remain explicit limits. Cursor
+reads hierarchical AGENTS and `.cursor/rules/*.mdc`; `alwaysApply` rules are
+distinct from file-glob/manual rules, which stay conditional without matching
+file evidence. Cursor User and Team Rules do not have a supported local file
+source. Antigravity reads GEMINI.md and `.agents/rules` files; conditional rule
+activation stays explicit. Claude managed inline policy is not read. Every
+instruction snapshot from disk is labeled `current_file_comparison`, never as
+proof of historical model context.
+
+All six supported first-tier adapters discover the user-global `~/AGENTS.md` and
+applicable project `AGENTS.md` files in the session worktree in the same
+assessment. They also retain each agent's supported global and project
+instruction paths and override behavior. OpenCode additionally discovers
+`~/.config/opencode/AGENTS.md`. The bounded comparison order interleaves eligible
+rules by instruction source, so one large file does not consume every early
+page. Rule identity uses source, heading, and exact section text rather than
+line position; moving a rule does not split the same target, while global and
+project sources remain separate.
+
+The optional Ignored Instructions worker uses these bounded local inputs to
+prepare Jev requests after the user supplies an API key. It splits long rule
+text and action text into overlapping byte ranges, then resumes fixed-size
+batches until it covers every eligible rule/assistant-text or tool-input pair
+and content page. Normalized tool-input text, including shell commands and all
+structured arguments, remains eligible. Tool-result text is removed. Assistant
+text also remains eligible. Jev receives each bounded text range; the local
+cursor stores which ranges completed. Selected instruction text, assistant text
+excerpts, and complete normalized tool inputs can leave the machine through
+those requests. The instruction files are current snapshots; they cannot prove
+what the model received when an older session ran. A user can select a 7-day or
+30-day session-activity window in Settings, but this does not create a historical
+instruction snapshot. No additional `SourceFormat` is accepted by this request
+path.
 
 Codex pairs `token_usage_record` and `event_msg`/`token_count` records once.
 Matching per-response and nonempty cumulative usage identifies exact copies
@@ -125,7 +193,7 @@ Dedicated reader registration alone does not establish usable session analysis.
 
 ## Source Matrix
 
-The table lists all 33 `SourceFormat` names from
+The table lists all 34 `SourceFormat` names from
 `crates/antiburn-local/src/analysis/evidence.rs`, each exactly once.
 
 Before a production session enters the local index, its CWD must resolve to a

@@ -958,7 +958,7 @@ async fn the_worker_loop_runs_one_pass_at_a_time() {
             &runner,
             &|_| {},
             &WorkerLoopSignals {
-                idle: &|| {},
+                report_changed: &|| {},
                 backlog: &|_| {},
             },
             &|_, _| {},
@@ -1030,7 +1030,7 @@ async fn a_worker_loop_pass_reports_one_busy_stretch_and_resets() {
             &runner,
             &|_| {},
             &WorkerLoopSignals {
-                idle: &|| {},
+                report_changed: &|| {},
                 backlog: &|_| {},
             },
             &|_, _| {},
@@ -1103,7 +1103,7 @@ async fn the_worker_loop_announces_backlog_start_and_drain_once() {
             &runner,
             &|_| {},
             &WorkerLoopSignals {
-                idle: &|| {},
+                report_changed: &|| {},
                 backlog: &|active| task_announced.lock().unwrap().push(active),
             },
             &|_, _| {},
@@ -1164,7 +1164,7 @@ async fn the_worker_loop_marks_the_backlog_busy_before_the_first_pass_runs() {
             &runner,
             &|_| {},
             &WorkerLoopSignals {
-                idle: &|| {},
+                report_changed: &|| {},
                 backlog: &|active| {
                     backlog_log
                         .lock()

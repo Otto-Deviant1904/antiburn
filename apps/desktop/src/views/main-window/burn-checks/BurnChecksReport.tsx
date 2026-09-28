@@ -10,7 +10,12 @@ import { Skeleton } from "../../../components/ui/Skeleton"
 import { renderAgentIcon } from "../../../lib/agentIcon"
 import { agentIconName, GENERIC_AGENT_ICON } from "../../../lib/presentation/agents"
 import { cn } from "../../../lib/cn"
-import type { ChecksCategoryPayload, ChecksReportPayload } from "../../../lib/insightsIpc"
+import { noteInteraction } from "../../../lib/ipc"
+import type {
+  BurnCheckTargetPayload,
+  ChecksCategoryPayload,
+  ChecksReportPayload,
+} from "../../../lib/insightsIpc"
 import {
   CHECK_LABELS,
   checksPresentation,
@@ -67,6 +72,30 @@ function LoadingCheckDetail() {
   )
 }
 
+function TargetDetails({
+  targets,
+  refresh,
+  openEvidence = false,
+}: {
+  targets: BurnCheckTargetPayload[]
+  refresh: () => void
+  openEvidence?: boolean
+}) {
+  return (
+    <div className="burn-check-target-list">
+      {targets.map((target) => (
+        <BurnCheckTargetDetail
+          key={target.findingId}
+          target={target}
+          refresh={refresh}
+          reportRow
+          openEvidence={openEvidence}
+        />
+      ))}
+    </div>
+  )
+}
+
 function TargetLoadError({ retry }: { retry: () => void }) {
   return (
     <article role="alert" className="rounded-control bg-surface-card/75 p-4">
@@ -99,14 +128,12 @@ function CheckDetailContent({
     const PassIcon = BURN_CHECK_MARKS.clean.Icon
     return (
       <div className="flex items-start gap-3 rounded-control bg-surface-card/75 p-4">
-        {check.clean > 0 && (
-          <PassIcon
-            size={14}
-            strokeWidth={BURN_CHECK_MARKS.clean.strokeWidth}
-            className={`mt-0.5 ${BURN_CHECK_MARKS.clean.iconClass}`}
-            aria-hidden="true"
-          />
-        )}
+        <PassIcon
+          size={14}
+          strokeWidth={BURN_CHECK_MARKS.clean.strokeWidth}
+          className={`mt-0.5 ${BURN_CHECK_MARKS.clean.iconClass}`}
+          aria-hidden="true"
+        />
         <p className="type-callout text-label-secondary">
           No finding in {check.clean} complete {check.clean === 1 ? "session" : "sessions"}.
         </p>
@@ -134,17 +161,11 @@ function CheckDetailContent({
         />
       )
     }
+    return <TargetDetails targets={targets.data.targets} refresh={session.refresh} />
+  }
+  if (check.id === "ignoredInstructions" && targets.data.targets.length > 0) {
     return (
-      <div className="burn-check-target-list">
-        {targets.data.targets.map((target) => (
-          <BurnCheckTargetDetail
-            key={target.findingId}
-            target={target}
-            refresh={session.refresh}
-            reportRow
-          />
-        ))}
-      </div>
+      <TargetDetails targets={targets.data.targets} refresh={session.refresh} openEvidence />
     )
   }
   return (
@@ -213,16 +234,34 @@ function CheckDetail({
       : null
   const showFindingActions = check.lifecycle === "failing" && check.finding > 0 && targetList
   const showSnoozedAction = snooze !== undefined || check.lifecycle === "awaitingVerification"
+  const findingReported = useRef(false)
   const trackVisibility = useCallback(
-    (node: HTMLDivElement | null) =>
-      session.setTargetsVisible(check.id, node !== null, deliberate),
-    [check.id, deliberate, session],
+    (node: HTMLDivElement | null) => {
+      if (node && !visible) findingReported.current = false
+      session.setTargetsVisible(check.id, node !== null && visible, deliberate)
+      if (
+        node &&
+        visible &&
+        check.id === "ignoredInstructions" &&
+        check.finding > 0 &&
+        deliberate &&
+        !findingReported.current
+      ) {
+        findingReported.current = true
+        noteInteraction({
+          kind: "ignoredInstructionObserved",
+          stage: "finding",
+          outcome: "visible",
+        })
+      }
+    },
+    [check.id, check.finding, deliberate, session, visible],
   )
   return (
     <div
       id={`burn-check-${check.id}-detail`}
       ref={
-        visible && (check.lifecycle === "failing" || check.lifecycle === "awaitingVerification")
+        check.lifecycle === "failing" || check.lifecycle === "awaitingVerification"
           ? trackVisibility
           : undefined
       }
@@ -281,7 +320,7 @@ function CheckDetail({
             check.lifecycle === "failing" && "pt-[var(--space-lg)]",
           )}
         >
-          <CheckDetailContent check={check} session={session} state={state} />
+          {visible && <CheckDetailContent check={check} session={session} state={state} />}
         </div>
       </BurnCheckDetailBody>
     </div>
@@ -483,7 +522,9 @@ export function BurnChecksReport({
   const snoozedChecks = presentation.snoozed
   const unassessed = report.categories.filter(
     (check) =>
-      check.id === focusedCheck && check.lifecycle == null && !snoozedIds.has(check.id),
+      (check.id === focusedCheck || check.id === "ignoredInstructions") &&
+      check.lifecycle == null &&
+      !snoozedIds.has(check.id),
   )
   const checks = [
     ...activeFailures,
@@ -692,7 +733,11 @@ export function BurnChecksReport({
             viewportClassName="burn-checks-collection-scroll"
           >
             <div className="burn-checks-collection-content">
-              {unassessed.map((check) => renderCheck(check))}
+              {unassessed.length > 0 && (
+                <div className="burn-checks-unassessed">
+                  {unassessed.map((check) => renderCheck(check))}
+                </div>
+              )}
               {activeFailures.length > 0 && (
                 <section className="burn-checks-group" aria-labelledby="burn-checks-failed">
                   <div className="burn-checks-group-body">

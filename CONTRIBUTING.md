@@ -15,22 +15,40 @@ Thank you for contributing.
 
 ## Privacy and safety
 
-antiburn is a local application. It needs no project-operated account, server,
-or backend. It can read local coding-agent data and contact a provider with the
-credentials that provider issued to the user. It must not send session content,
-credentials, or other user data to the project or to an unrelated third party.
+antiburn keeps its session index locally and needs no project-operated account.
+When the user enables Jev-powered Burn Checks with a TypeSafe API key, the
+current Ignored Instructions check sends selected instruction text, assistant
+text excerpts, and complete normalized tool inputs, including shell commands and
+structured arguments, to TypeSafe. It removes all tool-result text. Keep this paid,
+optional request separate from first-party product analytics. Do not send its
+inputs, responses, keys, findings, or evidence to analytics. Store only bounded local TypeSafe
+usage aggregates, including the model and price version used for estimates; do
+not retain request histories or session identifiers for billing summaries. Session deletion keeps these
+already-incurred totals. Clear Local Data removes them and the rolling usage
+reservations.
 
-The update check and anonymised application analytics are the only
-project-operated network channels. Neither is required for the app to work.
+Follow [the Jev check contract](docs/jev-check-contract.md) when adding a
+check-owned projection, input window, question set, or reducer. See
+[how Smart Burn Checks work](docs/smart-burn-checks.md) for the product flow.
+
+The update check and anonymised application analytics are project-operated
+network channels. Neither is required for the app to work.
 Analytics must keep all properties documented in [docs/analytics.md](docs/analytics.md):
 official configured builds can record launch and onboarding progress before
 setup completes, Settings → Privacy provides the opt-out, payloads contain no
 work or credentials, identifiers
 rotate, and builds without a configured endpoint send nothing.
 
+For Ignored Instructions, measure saved enablement transitions, completed
+execution outcomes, visible findings, evidence outcomes, and prompt actions
+using closed values only. Exclude historical assessment outcomes from normal
+adoption and automatic execution rates. Measure user-requested history runs separately.
+See the [measurement contract](docs/analytics-measurement.md).
+
 Take extra care with operations that modify files, stop processes, or can cost
-the user money. Require a clear user action, keep credentials in memory only,
-and state the cost and its bound in the pull request.
+the user money. Require a clear user action, keep provider credentials in native
+credential storage or memory rather than the app database, and state the cost
+and its bound in the pull request.
 
 Use synthetic test fixtures. Do not commit real transcripts, user names, home
 paths, repository names, credentials, or captured machine output. Redaction is

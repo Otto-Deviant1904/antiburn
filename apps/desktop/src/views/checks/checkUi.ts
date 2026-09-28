@@ -1,6 +1,7 @@
 import {
   Bot,
   BookOpen,
+  BookOpenCheck,
   Brain,
   Database,
   Gauge,
@@ -71,6 +72,10 @@ export const CHECK_UI: Record<BurnCheckDetectorId, CheckUiMetadata> = {
     icon: Database,
     recommendation: "Keep stable context reusable to avoid paid cache rehydration.",
   },
+  ignoredInstructions: {
+    icon: BookOpenCheck,
+    recommendation: "Follow the cited instruction and correct the affected work.",
+  },
 }
 
 const CHECK_ICONS: Record<BurnCheckDetectorId, LucideIcon> = {
@@ -83,6 +88,7 @@ const CHECK_ICONS: Record<BurnCheckDetectorId, LucideIcon> = {
   oldModelUsage: CHECK_UI.oldModelUsage.icon,
   overuseOfFastMode: CHECK_UI.overuseOfFastMode.icon,
   cacheChurn: CHECK_UI.cacheChurn.icon,
+  ignoredInstructions: CHECK_UI.ignoredInstructions.icon,
 }
 
 function failedSessionSummary(category: ChecksCategoryPayload): string {
@@ -121,7 +127,9 @@ export function checkRowPresentation(
 ) {
   const failed = category.lifecycle === "failing"
   const metric =
-    failed || (category.lifecycle === "passing" && category.estimatedTokenBurnBasisPoints === 0)
+    category.id !== "ignoredInstructions" &&
+    (failed ||
+      (category.lifecycle === "passing" && category.estimatedTokenBurnBasisPoints === 0))
       ? tokenBurnLabel(category)
       : null
   return {

@@ -75,6 +75,21 @@ describe("Checks presentation", () => {
     })
   })
 
+  it("keeps an in-progress instruction check in the passed group until a finding exists", () => {
+    const ongoing = category({
+      id: "ignoredInstructions",
+      finding: 0,
+      clean: 0,
+      unavailable: 7,
+      lifecycle: "passing",
+    })
+    const presentation = checksPresentation(report([ongoing]))
+
+    expect(presentation.wins.map((check) => check.id)).toEqual(["ignoredInstructions"])
+    expect(presentation.failures).toEqual([])
+    expect(checksHeroPresentation(presentation).result).toBe("No issues found")
+  })
+
   it("keeps passed hero text neutral", () => {
     const presentation = checksPresentation(
       report([category({ finding: 0, clean: 10, unavailable: 0 })]),
