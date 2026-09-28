@@ -17,6 +17,8 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-09-29
+
 ### Added
 
 - Add `AgentKind::Omp` and `SourceFormat::OmpV3Jsonl`. Discovery reads
@@ -29,6 +31,23 @@ version and refuses the release if there is none.
   scaffolding handles the row. Pi-only rows and other OMP record types stay
   unrecognized. Session-overdepth, model-overthinking, and old-model findings
   are allowed; overpowered-subagent and clean results are not.
+
+- Add `discovery::fork_parent_from_content`, which reads a declared fork
+  parent from the first five records of a transcript, searching at most four
+  levels into a metadata record. It reads normalized and Codex fork headers.
+- Cache evidence counts `transient_miss_episodes` (a cache miss followed by
+  recovered hits during continuous activity) and
+  `possible_rehydration_episodes` (a recovered miss after the supported idle
+  interval for the route). Pi and OpenCode routes are supported.
+
+### Changed
+
+- The cache-churn check needs a possible rehydration episode before it reports
+  a finding. A high repeated-input ratio alone is not assessed.
+- A Pi attempt that aborts with zero reported tokens is no longer evidence of
+  excessive thinking. Its model and provider changes still carry forward.
+- Advance `ANALYZER_REVISION` to 25 and `EVIDENCE_SCHEMA_REVISION` to 22, so
+  stored analyses reparse.
 
 ## [0.11.0] - 2026-09-22
 
