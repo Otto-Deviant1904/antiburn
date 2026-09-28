@@ -596,9 +596,7 @@ async fn refresh_sessions_locked(
         previous_map.insert(key.clone(), record);
     }
 
-    let include_non_repo_folders = store
-        .settings()
-        .is_ok_and(|settings| settings.include_non_repo_folders);
+    let include_non_repo_folders = store.settings_snapshot().include_non_repo_folders;
     let described = super::describe_with_gate(
         logs,
         &home,

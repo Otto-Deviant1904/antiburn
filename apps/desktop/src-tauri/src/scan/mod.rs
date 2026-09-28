@@ -959,9 +959,7 @@ async fn pass(
         })
         .collect::<Vec<_>>();
     let previous_records = store.session_records_for_activity_keys(&activity_keys)?;
-    let include_non_repo_folders = store
-        .settings()
-        .is_ok_and(|settings| settings.include_non_repo_folders);
+    let include_non_repo_folders = store.settings_snapshot().include_non_repo_folders;
     let described = describe_with_gate(
         logs,
         &home,
