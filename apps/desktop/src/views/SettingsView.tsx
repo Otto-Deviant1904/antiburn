@@ -77,7 +77,12 @@ export function SettingsView() {
   const paneRenderers: Record<SettingsPane, () => ReactNode> = {
     general: () => <GeneralPane {...controller} info={info} />,
     appearance: () => <AppearancePane {...controller} />,
-    sources: () => <SourcesPane discoveryPaused={controller.settings.discoveryPaused} />,
+    sources: () => (
+      <SourcesPane
+        discoveryPaused={controller.settings.discoveryPaused}
+        appVersion={info?.appVersion ?? "VERSION"}
+      />
+    ),
     privacy: () => <PrivacyPane {...controller} info={info} />,
     notifications: () => <NotificationsPane {...controller} />,
     usage: () => <UsagePane {...controller} />,

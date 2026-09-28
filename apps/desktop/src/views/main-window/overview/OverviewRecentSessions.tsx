@@ -289,6 +289,7 @@ export function OverviewRecentSessions({
                     entry.agent,
                     entry.sessionId ?? entry.timestamp,
                     entry.wslDistro,
+                    entry.remoteHostId,
                   )}
                   entry={entry}
                   now={now}
@@ -298,6 +299,7 @@ export function OverviewRecentSessions({
                           agent: entry.agent,
                           sessionId: entry.sessionId,
                           wslDistro: entry.wslDistro ?? null,
+                          remoteHostId: entry.remoteHostId ?? null,
                         })
                       : INITIAL_SESSION_HYGIENE
                   }

@@ -1090,7 +1090,8 @@ pub(super) fn enroll_passive_remediations_in(
     let mut statement = connection.prepare(
         "SELECT CAST(json_extract(candidate.value, '$.index') AS INTEGER)
            FROM json_each(?1) candidate
-          WHERE NOT EXISTS (
+          WHERE json_extract(candidate.value, '$.environmentKey') = 'native'
+            AND NOT EXISTS (
                     SELECT 1 FROM remediation
                      WHERE remediation_id = json_extract(candidate.value, '$.remediationId'))
              AND NOT EXISTS (
@@ -1120,6 +1121,9 @@ pub(super) fn enroll_passive_remediations_in(
     for index in selected {
         prune_archivable_fixed_in(connection)?;
         let candidate = &candidates[index];
+        if candidate.environment_key != "native" {
+            continue;
+        }
         validate_json("definition_json", &candidate.definition_json)?;
         validate_json("result_json", &candidate.result_json)?;
         validate_safe_json("display_snapshot_json", &candidate.display_snapshot_json)?;

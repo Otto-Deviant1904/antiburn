@@ -21,6 +21,13 @@ attempts, safe display facts, and verified savings stay in the local database.
 Antiburn does not require an account. It does not use a third-party analytics,
 telemetry, crash-reporting, or session-replay SDK.
 
+If you add a remote host, Antiburn uses your configured SSH connection to copy
+supported sessions and companion files into a private cache on this computer.
+Analysis happens here. The transfer does not send those files to Antiburn's
+operator or an unrelated third party. Removing a host deletes the local copies
+and their analysis; it leaves the remote originals unchanged. SSH aliases,
+host names, remote paths, and connection diagnostics are not analytics data.
+
 ## Analytics we collect
 
 Official release builds send limited events about how the application works,

@@ -61,6 +61,7 @@ pub struct SessionTarget {
     agent: String,
     session_id: String,
     wsl_distro: Option<String>,
+    remote_host_id: Option<String>,
 }
 
 /// One exact destination requested from outside the retained renderer.
@@ -69,6 +70,8 @@ pub struct SessionTarget {
 pub struct NavigationDestination {
     section: MainWindowSection,
     target: Option<SessionTarget>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remote_host_id: Option<String>,
 }
 
 /// Revisioned request shared by the event and renderer recovery paths.
@@ -411,6 +414,7 @@ impl MainWindowState {
         agent: String,
         session_id: String,
         wsl_distro: Option<String>,
+        remote_host_id: Option<String>,
         now: Instant,
     ) -> Result<String, String> {
         let mut targets = lock(&self.sample_targets);
@@ -420,6 +424,7 @@ impl MainWindowState {
             entry.target.agent == agent
                 && entry.target.session_id == session_id
                 && entry.target.wsl_distro == wsl_distro
+                && entry.target.remote_host_id == remote_host_id
         }) {
             let mut entry = targets.remove(index).expect("the matched sample exists");
             entry.created_at = now;
@@ -439,6 +444,7 @@ impl MainWindowState {
                 agent,
                 session_id,
                 wsl_distro,
+                remote_host_id,
             },
             created_at: now,
         });
@@ -885,11 +891,15 @@ fn existing_session_targets(
     targets
         .into_iter()
         .filter_map(|target| {
-            let key = SessionKey::for_session(
+            let key = match SessionKey::for_origin(
                 &target.agent,
                 &target.session_id,
                 target.wsl_distro.as_deref(),
-            );
+                target.remote_host_id.as_deref(),
+            ) {
+                Ok(key) => key,
+                Err(error) => return Some(Err(error.to_owned())),
+            };
             match store.session(&key) {
                 Ok(Some(_)) => Some(Ok(target)),
                 Ok(None) => None,
@@ -908,6 +918,7 @@ fn route_session_target(app: &AppHandle, target: SessionTarget) -> Result<(), St
     let request = state.request_navigation_target(NavigationDestination {
         section: MainWindowSection::Activity,
         target: Some(target),
+        remote_host_id: None,
     });
     if let Err(error) = open(app, OpenTrigger::Interaction) {
         state.clear_navigation_target(request.revision);
@@ -962,6 +973,7 @@ pub(crate) fn sample_payloads_from_store(
                 sample.agent.clone(),
                 sample.session_id.clone(),
                 activity.wsl_distro.clone(),
+                activity.remote_host_id.clone(),
                 now,
             )?;
             Ok(BurnCheckSamplePayload {
@@ -1069,11 +1081,15 @@ fn resolve_sample_for_open(
         }
     };
     let exists = store
-        .session(&SessionKey::for_session(
-            &target.agent,
-            &target.session_id,
-            target.wsl_distro.as_deref(),
-        ))
+        .session(
+            &SessionKey::for_origin(
+                &target.agent,
+                &target.session_id,
+                target.wsl_distro.as_deref(),
+                target.remote_host_id.as_deref(),
+            )
+            .map_err(str::to_owned)?,
+        )
         .map_err(|error| error.to_string())?
         .is_some();
     if exists {
@@ -1093,23 +1109,42 @@ pub async fn open_main_window_section(
     window: WebviewWindow,
     app: AppHandle,
     section: MainWindowSection,
+    remote_host_id: Option<String>,
 ) -> Result<(), String> {
-    if window.label() != crate::popover::LABEL {
-        return Err("main-window sections are unavailable to this window".to_owned());
-    }
-    on_main_value(&app, move |app| route_section_target(app, section)).await?
+    let destination = section_navigation_destination(window.label(), section, remote_host_id)?;
+    on_main_value(&app, move |app| route_section_target(app, destination)).await?
 }
 
-fn route_section_target(app: &AppHandle, section: MainWindowSection) -> Result<(), String> {
-    let state = app.state::<MainWindowState>();
-    let request = state.request_navigation_target(NavigationDestination {
+fn section_navigation_destination(
+    caller: &str,
+    section: MainWindowSection,
+    remote_host_id: Option<String>,
+) -> Result<NavigationDestination, String> {
+    let settings_host = caller == crate::settings::LABEL
+        && section == MainWindowSection::Activity
+        && remote_host_id.is_some();
+    if !settings_host && (caller != crate::popover::LABEL || remote_host_id.is_some()) {
+        return Err("main-window sections are unavailable to this window".to_owned());
+    }
+    if let Some(id) = remote_host_id.as_deref() {
+        crate::remote_sessions::validate_host_id(id)?;
+    }
+    Ok(NavigationDestination {
         section,
         target: None,
-    });
-    ::tracing::info!(
-        event = "main_window_open_source",
-        source = "popover_section"
-    );
+        remote_host_id,
+    })
+}
+
+fn route_section_target(app: &AppHandle, destination: NavigationDestination) -> Result<(), String> {
+    let state = app.state::<MainWindowState>();
+    let source = if destination.remote_host_id.is_some() {
+        "settings_remote_host"
+    } else {
+        "popover_section"
+    };
+    let request = state.request_navigation_target(destination);
+    ::tracing::info!(event = "main_window_open_source", source);
     if let Err(error) = open(app, OpenTrigger::Interaction) {
         state.clear_navigation_target(request.revision);
         return Err(error.to_string());
@@ -2057,6 +2092,7 @@ mod tests {
             agent: "codex".to_owned(),
             session_id: id.to_owned(),
             wsl_distro: None,
+            remote_host_id: None,
         }
     }
 
@@ -2083,6 +2119,7 @@ mod tests {
         NavigationDestination {
             section: MainWindowSection::Activity,
             target: Some(target(id)),
+            remote_host_id: None,
         }
     }
 
@@ -2090,6 +2127,7 @@ mod tests {
         NavigationDestination {
             section,
             target: None,
+            remote_host_id: None,
         }
     }
 
@@ -2490,6 +2528,7 @@ mod tests {
                         "agent": "codex",
                         "sessionId": "correlated",
                         "wslDistro": null,
+                        "remoteHostId": null,
                     },
                 },
             })
@@ -2514,6 +2553,7 @@ mod tests {
             agent: "codex".to_owned(),
             session_id: "shared".to_owned(),
             wsl_distro: Some("Ubuntu".to_owned()),
+            remote_host_id: None,
         };
         let missing = target("missing");
 
@@ -2663,11 +2703,11 @@ mod tests {
         let state = state();
         let now = Instant::now();
         let handle = state
-            .issue_sample_handle("codex".into(), "session".into(), None, now)
+            .issue_sample_handle("codex".into(), "session".into(), None, None, now)
             .unwrap();
         let refreshed_at = now + SAMPLE_HANDLE_TTL - Duration::from_secs(1);
         let reused = state
-            .issue_sample_handle("codex".into(), "session".into(), None, refreshed_at)
+            .issue_sample_handle("codex".into(), "session".into(), None, None, refreshed_at)
             .unwrap();
         assert_eq!(handle, reused);
         assert!(
@@ -2689,24 +2729,30 @@ mod tests {
         let state = state();
         let now = Instant::now();
         let handle = state
-            .issue_sample_handle("codex".into(), "selected".into(), None, now)
+            .issue_sample_handle("codex".into(), "selected".into(), None, None, now)
             .unwrap();
         let mut oldest_unused = String::new();
         for index in 1..SAMPLE_HANDLE_LIMIT {
             let issued = state
-                .issue_sample_handle("codex".into(), format!("old-{index}"), None, now)
+                .issue_sample_handle("codex".into(), format!("old-{index}"), None, None, now)
                 .unwrap();
             if index == 1 {
                 oldest_unused = issued;
             }
         }
         let reused = state
-            .issue_sample_handle("codex".into(), "selected".into(), None, now)
+            .issue_sample_handle("codex".into(), "selected".into(), None, None, now)
             .unwrap();
         assert_eq!(handle, reused);
         for index in 0..303 {
             state
-                .issue_sample_handle("claude-code".into(), format!("new-{index}"), None, now)
+                .issue_sample_handle(
+                    "claude-code".into(),
+                    format!("new-{index}"),
+                    None,
+                    None,
+                    now,
+                )
                 .unwrap();
         }
         assert!(state.resolve_sample_handle(&handle, now).is_ok());
@@ -2722,7 +2768,7 @@ mod tests {
         let state = state();
         let now = Instant::now();
         let handle = state
-            .issue_sample_handle("codex".to_owned(), "private-id".to_owned(), None, now)
+            .issue_sample_handle("codex".to_owned(), "private-id".to_owned(), None, None, now)
             .unwrap();
 
         assert!(!handle.contains("private-id"));
@@ -2767,13 +2813,70 @@ mod tests {
             .expect("open store");
         let now = Instant::now();
         let handle = state
-            .issue_sample_handle("codex".to_owned(), "deleted".to_owned(), None, now)
+            .issue_sample_handle("codex".to_owned(), "deleted".to_owned(), None, None, now)
             .unwrap();
 
         assert!(matches!(
             resolve_sample_for_open(&state, &store, &handle, now),
             Ok(Err(OpenBurnCheckSampleOutcome::Deleted))
         ));
+    }
+
+    #[test]
+    fn settings_host_navigation_is_scoped_and_recoverable() {
+        let id = "11111111-1111-1111-1111-111111111111".to_owned();
+        let destination = section_navigation_destination(
+            crate::settings::LABEL,
+            MainWindowSection::Activity,
+            Some(id.clone()),
+        )
+        .unwrap();
+        assert_eq!(destination.remote_host_id, Some(id.clone()));
+        assert!(destination.target.is_none());
+        let state = state();
+        let request = state.request_navigation_target(destination);
+        assert_eq!(
+            lock(&state.navigation_target).pending,
+            Some(request.clone())
+        );
+        let json = serde_json::to_value(request).unwrap();
+        assert_eq!(json["destination"]["remoteHostId"], id);
+        assert!(
+            section_navigation_destination(
+                crate::settings::LABEL,
+                MainWindowSection::Activity,
+                None
+            )
+            .is_err()
+        );
+        assert!(
+            section_navigation_destination(
+                crate::settings::LABEL,
+                MainWindowSection::Activity,
+                Some("invalid".to_owned())
+            )
+            .is_err()
+        );
+        assert!(
+            section_navigation_destination(
+                crate::popover::LABEL,
+                MainWindowSection::Activity,
+                Some(id.clone())
+            )
+            .is_err()
+        );
+        assert!(
+            section_navigation_destination("untrusted", MainWindowSection::Activity, Some(id))
+                .is_err()
+        );
+        assert!(
+            section_navigation_destination(
+                crate::popover::LABEL,
+                MainWindowSection::Activity,
+                None
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -2786,7 +2889,9 @@ mod tests {
                 agent: "claude-code".to_owned(),
                 session_id: "external".to_owned(),
                 wsl_distro: None,
+                remote_host_id: None,
             }),
+            remote_host_id: None,
         });
 
         assert!(external.revision > sample.revision);

@@ -271,7 +271,6 @@
     --color-text-secondary: -apple-system-secondary-label;
     --color-text-tertiary: -apple-system-tertiary-label;
     --color-border: -apple-system-separator;
-    --color-accent-val: -apple-system-accent-color;
   }
 }
 
@@ -366,7 +365,6 @@
     --color-text-primary: -apple-system-label;
     --color-text-secondary: -apple-system-secondary-label;
     --color-border: -apple-system-separator;
-    --color-accent-val: -apple-system-accent-color;
   }
 }
 
@@ -543,6 +541,22 @@
     --color-text-primary: -apple-system-label;
     --color-text-secondary: -apple-system-secondary-label;
     --color-border: -apple-system-separator;
+  }
+}
+
+/* Check accent support separately from system label support. */
+@supports (color: -apple-system-control-accent) {
+  :root,
+  :root[data-theme="light"],
+  :root[data-theme="dark"] {
+    --color-accent-val: -apple-system-control-accent;
+  }
+}
+
+@supports (color: -apple-system-accent-color) {
+  :root,
+  :root[data-theme="light"],
+  :root[data-theme="dark"] {
     --color-accent-val: -apple-system-accent-color;
   }
 }

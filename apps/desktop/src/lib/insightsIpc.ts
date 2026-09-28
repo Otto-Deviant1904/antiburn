@@ -598,6 +598,7 @@ export async function getSessionHygiene(
       agent: session.agent,
       sessionId: session.sessionId,
       wslDistro: session.wslDistro ?? null,
+      ...(session.remoteHostId ? { remoteHostId: session.remoteHostId } : {}),
     })),
   })
 }

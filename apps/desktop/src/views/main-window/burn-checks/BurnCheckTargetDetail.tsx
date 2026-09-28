@@ -69,8 +69,18 @@ export function BurnCheckTargetDetail({
             <ProjectFolderActions
               key={projectPath}
               path={projectPath}
-              onOpen={() => performProjectFolderAction(projectPath, "open")}
-              onCopy={() => performProjectFolderAction(projectPath, "copy")}
+              onOpen={() =>
+                performProjectFolderAction(projectPath, "open", {
+                  kind: "burnCheck",
+                  actionId: target.actionId,
+                })
+              }
+              onCopy={() =>
+                performProjectFolderAction(projectPath, "copy", {
+                  kind: "burnCheck",
+                  actionId: target.actionId,
+                })
+              }
             />
           )}
         </div>

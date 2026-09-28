@@ -739,6 +739,42 @@ impl RemediationController {
         )
     }
 
+    /// Resolve a project folder from an unexpired local check action.
+    pub fn project_folder(
+        &self,
+        store: &Store,
+        action_id: &str,
+    ) -> Result<String, ControllerError> {
+        let target = self.cached_target(action_id, now_epoch())?;
+        if target.scope_kind != "project" {
+            return Err(ControllerError::TargetNotFound);
+        }
+        let finding = target
+            .findings
+            .first()
+            .ok_or(ControllerError::TargetNotFound)?;
+        let environment = &finding.environment_key;
+        if environment != "native"
+            && !environment
+                .strip_prefix("wsl:")
+                .is_some_and(|distro| !distro.is_empty())
+        {
+            return Err(ControllerError::TargetNotFound);
+        }
+        let key = SessionKey::new(environment, &finding.agent, &finding.session_id);
+        if store
+            .session(&key)
+            .map_err(|_| ControllerError::Internal)?
+            .is_none()
+        {
+            return Err(ControllerError::TargetNotFound);
+        }
+        finding
+            .workspace_candidate()
+            .and_then(display::project_path)
+            .ok_or(ControllerError::TargetNotFound)
+    }
+
     pub fn copy_prompt_fix_burn_check_target(
         &self,
         store: &Store,

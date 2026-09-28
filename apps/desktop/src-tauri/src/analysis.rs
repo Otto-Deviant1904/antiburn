@@ -1908,6 +1908,47 @@ pub async fn analyze_for_evidence(
     let Some(source) = locate(agent, session_id, wsl_distro).await else {
         return unavailable_evidence_pass(PassOutcome::SourceMissing, None, None);
     };
+    let mut paths = Explorers::DISK
+        .list_subagents_in_environment(&agent, session_id, wsl_distro)
+        .await;
+    paths.sort();
+    let mut children = Vec::new();
+    for path in paths {
+        if let Some(id) = Explorers::DISK.subagent_id(&agent, &path) {
+            let label = Explorers::DISK.subagent_label(&agent, &path).await;
+            children.push((id, label, path));
+        }
+    }
+    analyze_located_for_evidence(
+        agent,
+        session_id,
+        claimed,
+        signal,
+        turn_row_store,
+        fork_parent_session_id,
+        LocatedTranscripts { source, children },
+    )
+    .await
+}
+
+/// Evidence paths already admitted by an origin-specific adapter.
+pub struct LocatedTranscripts {
+    pub source: SessionSource,
+    pub children: Vec<(String, String, std::path::PathBuf)>,
+}
+
+/// Analyzes only the supplied evidence. This entry point never discovers a
+/// local source, so a remote cache cannot inherit facts from this computer.
+pub async fn analyze_located_for_evidence(
+    agent: AgentKind,
+    session_id: &str,
+    claimed: ClaimedSource,
+    signal: PassSignal,
+    turn_row_store: Option<Arc<dyn TurnRowStore>>,
+    fork_parent_session_id: Option<String>,
+    transcripts: LocatedTranscripts,
+) -> EvidencePass {
+    let LocatedTranscripts { source, children } = transcripts;
     let admitted_format = source_format(agent, &source);
     let Some(raw) = raw_source_with_format(agent, &source, admitted_format).await else {
         // Only a provider-database source reaches here: `raw_source` reads
@@ -1929,13 +1970,7 @@ pub async fn analyze_for_evidence(
         fork_parent_session_id: fork_parent_session_id.clone(),
     };
 
-    // Sub-agent transcripts, resolved before the analysis so all of them ride
-    // the same batch. The engine short-circuits for vendors that record no
-    // orchestration, so this needs no per-agent gate of its own.
-    let mut subagent_paths = Explorers::DISK
-        .list_subagents_in_environment(&agent, session_id, wsl_distro)
-        .await;
-    subagent_paths.sort();
+    let subagent_paths: Vec<_> = children.iter().map(|(_, _, path)| path.clone()).collect();
     let database_claim = matches!(&source, SessionSource::ProviderDb { .. })
         .then(|| claimed.fingerprint.clone())
         .flatten();
@@ -1953,16 +1988,12 @@ pub async fn analyze_for_evidence(
         combined_fingerprint(agent, &source, &subagent_paths)
     };
     let mut subagents: Vec<(String, String, SessionInput)> = Vec::new();
-    for path in &subagent_paths {
-        let Some(subagent_id) = Explorers::DISK.subagent_id(&agent, path) else {
-            continue;
-        };
-        let source = SessionSource::File(path.clone());
+    for (subagent_id, label_text, path) in children {
+        let source = SessionSource::File(path);
         let admitted_format = source_format(agent, &source);
         let Some(raw) = raw_source_with_format(agent, &source, admitted_format).await else {
             continue;
         };
-        let label_text = Explorers::DISK.subagent_label(&agent, path).await;
         subagents.push((
             subagent_id.clone(),
             label_text,
@@ -2451,7 +2482,7 @@ pub(crate) fn unsupported_evidence_pass() -> EvidencePass {
     unavailable_evidence_pass(PassOutcome::Unsupported, None, None)
 }
 
-fn unavailable_evidence_pass(
+pub(crate) fn unavailable_evidence_pass(
     outcome: PassOutcome,
     source_path: Option<String>,
     fingerprint: Option<String>,

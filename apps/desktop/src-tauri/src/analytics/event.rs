@@ -102,6 +102,15 @@ pub enum EventName {
     /// The contextual Sessions filters changed.
     #[cfg(feature = "analytics")]
     SessionFiltersChanged,
+    /// A remote-host prerequisite check reached a closed result.
+    #[cfg(feature = "analytics")]
+    RemoteHostConnectionChecked,
+    /// A configured remote host was added, edited, or removed.
+    #[cfg(feature = "analytics")]
+    RemoteHostChanged,
+    /// A remote synchronization pass reached a terminal result.
+    #[cfg(feature = "analytics")]
+    RemoteSyncCompleted,
     /// An explicit project folder action completed.
     #[cfg(feature = "analytics")]
     ProjectFolderAction,
@@ -164,6 +173,9 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::BurnCheckOutcomeObserved,
     EventName::SessionFilterSelected,
     EventName::SessionFiltersChanged,
+    EventName::RemoteHostConnectionChecked,
+    EventName::RemoteHostChanged,
+    EventName::RemoteSyncCompleted,
     EventName::ProjectFolderAction,
     EventName::QuotaIncidentsObserved,
     EventName::ProviderIncidentsObserved,
@@ -206,6 +218,9 @@ impl EventName {
             EventName::ProjectFolderAction => "antiburn.project_folder_action",
             EventName::SessionFilterSelected => "antiburn.session_filter_selected",
             EventName::SessionFiltersChanged => "antiburn.session_filters_changed",
+            EventName::RemoteHostConnectionChecked => "antiburn.remote_host_connection_checked",
+            EventName::RemoteHostChanged => "antiburn.remote_host_changed",
+            EventName::RemoteSyncCompleted => "antiburn.remote_sync_completed",
             EventName::QuotaIncidentsObserved => "antiburn.quota_incidents_observed",
             EventName::ProviderIncidentsObserved => "antiburn.provider_incidents_observed",
             EventName::ProviderIncidentsIngested => "antiburn.provider_incidents_ingested",
@@ -686,6 +701,7 @@ pub enum OnboardingStep {
 pub enum Environment {
     Native,
     Wsl,
+    Remote,
 }
 
 /// A Sessions sidebar filter kind. `Agent` covers every harness item; the
@@ -729,7 +745,50 @@ pub enum SessionFilterAction {
     SpendNotable,
     SpendMaterial,
     SpendAll,
+    SourceAll,
+    SourceLocalAdded,
+    SourceLocalRemoved,
+    SourceRemoteAllAdded,
+    SourceRemoteAllRemoved,
+    SourceRemoteHostAdded,
+    SourceRemoteHostRemoved,
     ClearedAll,
+}
+
+/// A privacy-safe result from checking one remote host connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteConnectionOutcome {
+    Ready,
+    Authentication,
+    HostKey,
+    HelperMissing,
+    Incompatible,
+    Connection,
+    Invalid,
+}
+
+/// A configured-host lifecycle operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteHostChange {
+    Added,
+    Edited,
+    Removed,
+    SyncEnabled,
+    SyncDisabled,
+}
+
+/// A terminal remote synchronization result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteSyncOutcome {
+    Succeeded,
+    Failed,
+}
+
+/// Why a remote synchronization pass started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteSyncOrigin {
+    Manual,
+    Automatic,
 }
 
 #[cfg(feature = "analytics")]
@@ -943,6 +1002,13 @@ wire_values!(SessionFilterAction, {
     SessionFilterAction::SpendNotable => "spend_notable",
     SessionFilterAction::SpendMaterial => "spend_material",
     SessionFilterAction::SpendAll => "spend_all",
+    SessionFilterAction::SourceAll => "source_all",
+    SessionFilterAction::SourceLocalAdded => "source_local_added",
+    SessionFilterAction::SourceLocalRemoved => "source_local_removed",
+    SessionFilterAction::SourceRemoteAllAdded => "source_remote_all_added",
+    SessionFilterAction::SourceRemoteAllRemoved => "source_remote_all_removed",
+    SessionFilterAction::SourceRemoteHostAdded => "source_remote_host_added",
+    SessionFilterAction::SourceRemoteHostRemoved => "source_remote_host_removed",
     SessionFilterAction::ClearedAll => "cleared_all",
 });
 
@@ -1077,6 +1143,7 @@ impl Environment {
         match self {
             Environment::Native => "native",
             Environment::Wsl => "wsl",
+            Environment::Remote => "remote",
         }
     }
 }
@@ -1749,6 +1816,9 @@ mod tests {
                 | EventName::ProjectFolderAction
                 | EventName::SessionFilterSelected
                 | EventName::SessionFiltersChanged
+                | EventName::RemoteHostConnectionChecked
+                | EventName::RemoteHostChanged
+                | EventName::RemoteSyncCompleted
                 | EventName::QuotaIncidentsObserved
                 | EventName::ProviderIncidentsObserved
                 | EventName::ProviderIncidentsIngested
@@ -1761,7 +1831,7 @@ mod tests {
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            35,
+            38,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));

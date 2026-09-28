@@ -182,6 +182,28 @@ pub struct RemediationResult {
 }
 
 impl SessionKey {
+    pub fn for_origin(
+        agent: &str,
+        session_id: &str,
+        wsl_distro: Option<&str>,
+        remote_host_id: Option<&str>,
+    ) -> Result<Self, &'static str> {
+        let wsl = wsl_distro.map(str::trim).filter(|value| !value.is_empty());
+        let remote = remote_host_id.map(str::trim);
+        match (wsl, remote) {
+            (Some(_), Some(_)) => Err("a session cannot be both WSL and remote"),
+            (None, Some("")) => Err("remote host ID is empty"),
+            (None, Some(host_id)) => Ok(Self::new(format!("ssh:{host_id}"), agent, session_id)),
+            (_, None) => Ok(Self::for_session(agent, session_id, wsl_distro)),
+        }
+    }
+
+    pub fn remote_host_id(&self) -> Option<&str> {
+        self.environment_key
+            .strip_prefix("ssh:")
+            .filter(|host_id| !host_id.is_empty())
+    }
+
     pub fn new(
         environment_key: impl Into<String>,
         agent: impl Into<String>,
@@ -1317,5 +1339,26 @@ mod tests {
         assert_eq!(key.agent, "claude-code");
         assert_eq!(key.session_id, "abc");
         assert_ne!(key, SessionKey::for_session("claude-code", "abc", None));
+    }
+
+    #[test]
+    fn remote_identity_uses_the_immutable_host_id_and_rejects_wsl() {
+        let key = SessionKey::for_origin(
+            "claude-code",
+            "abc",
+            None,
+            Some("11111111-1111-4111-8111-111111111111"),
+        )
+        .unwrap();
+        assert_eq!(
+            key.environment_key,
+            "ssh:11111111-1111-4111-8111-111111111111"
+        );
+        assert_eq!(
+            key.remote_host_id(),
+            Some("11111111-1111-4111-8111-111111111111")
+        );
+        assert!(SessionKey::for_origin("claude-code", "abc", Some("Ubuntu"), Some("id")).is_err());
+        assert!(SessionKey::for_origin("claude-code", "abc", None, Some("  ")).is_err());
     }
 }

@@ -2509,7 +2509,7 @@ pub(crate) mod tests {
         );
     }
 
-    fn publish_reasoning_at_cwd(
+    pub(crate) fn publish_reasoning_at_cwd(
         store: &Store,
         session_id: &str,
         started_at_epoch: i64,

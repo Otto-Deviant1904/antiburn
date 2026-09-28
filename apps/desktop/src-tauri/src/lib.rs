@@ -81,6 +81,9 @@ mod popover_peek;
 mod provider_accounts;
 mod provider_usage;
 pub mod remediation;
+mod remote_cache;
+mod remote_sessions;
+mod remote_sync;
 mod repositories;
 mod retention;
 mod runtime_pricing;
@@ -378,6 +381,8 @@ pub fn run() {
             usage_alerts::LiveUsage::from_store(&store)
         };
         app.manage(live_usage);
+        // Only file metadata, but keep it off the launch path.
+        tauri::async_runtime::spawn_blocking(provider_usage::live::sources::log_cli_location);
         let settings = app.state::<store::Store>().settings().ok();
         let snapshot = app.state::<usage_alerts::LiveUsage>().snapshot();
         tray::sync_usage(
@@ -394,6 +399,7 @@ pub fn run() {
             schedulers.push(session_lifecycle::spawn(app.handle()));
             schedulers.push(session_projection::spawn(app.handle()));
             schedulers.push(scan::spawn_scheduler(app.handle()));
+            schedulers.push(remote_sync::spawn(app.handle()));
             schedulers.push(scan::live_poll::spawn_live_poll(app.handle()));
             schedulers.push(retention::spawn_scheduler(app.handle()));
             schedulers.push(insights_worker::spawn(app.handle()));
