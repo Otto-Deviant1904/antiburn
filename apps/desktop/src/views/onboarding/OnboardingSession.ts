@@ -116,6 +116,9 @@ export class OnboardingSession {
   private agentChoicesTouched = false
   private hygieneTimer: ReturnType<typeof setInterval> | null = null
   private analyticsSteps = new Set<OnboardingStep>()
+  private nonRepoSaves: Promise<void> = Promise.resolve()
+  private nonRepoGesture = 0
+  private savedIncludeNonRepoFolders = false
 
   private snapshot: OnboardingSnapshot
 
@@ -173,18 +176,26 @@ export class OnboardingSession {
    * Save the choice now, not at `finish`: the save starts a rescan, so the
    * Ready step counts the sessions that the switch adds.
    */
-  setIncludeNonRepoFolders = async (enabled: boolean): Promise<void> => {
-    const previous = this.snapshot.includeNonRepoFolders
+  setIncludeNonRepoFolders = (enabled: boolean): Promise<void> => {
+    const gesture = ++this.nonRepoGesture
     this.update({ includeNonRepoFolders: enabled })
-    try {
-      const saved = await setSettings({
-        ...(await getSettings()),
-        includeNonRepoFolders: enabled,
-      })
-      this.update({ includeNonRepoFolders: saved.includeNonRepoFolders })
-    } catch {
-      this.update({ includeNonRepoFolders: previous })
-    }
+    // Save in gesture order, so an older save cannot finish last. Only the
+    // latest gesture updates the switch.
+    this.nonRepoSaves = this.nonRepoSaves.then(async () => {
+      try {
+        const saved = await setSettings({
+          ...(await getSettings()),
+          includeNonRepoFolders: enabled,
+        })
+        this.savedIncludeNonRepoFolders = saved.includeNonRepoFolders
+      } catch {
+        // Keep the last saved value.
+      }
+      if (gesture === this.nonRepoGesture) {
+        this.update({ includeNonRepoFolders: this.savedIncludeNonRepoFolders })
+      }
+    })
+    return this.nonRepoSaves
   }
 
   /**
@@ -337,6 +348,7 @@ export class OnboardingSession {
       if (generation !== this.generation) return
 
       applyTheme(settings.theme)
+      this.savedIncludeNonRepoFolders = settings.includeNonRepoFolders
       this.update({
         loadState: "ready",
         liveUsageMeters: null,

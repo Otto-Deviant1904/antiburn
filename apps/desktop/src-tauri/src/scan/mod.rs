@@ -1590,10 +1590,12 @@ async fn describe_with_gate(
                             let root = git::canonical_main_repo_root(&root).await;
                             // Apply the shared opt-out gate to both the working
                             // directory and the canonical main root. This also
-                            // covers linked worktrees.
+                            // covers linked worktrees. Use `record.cwd`: it holds
+                            // the inferred repository when the scan moved the
+                            // session from a parent folder.
                             if ignored_paths::is_session_ignored(
                                 ignored,
-                                Some(&cwd),
+                                record.cwd.as_deref().or(Some(&cwd)),
                                 &root.to_string_lossy(),
                             ) {
                                 gate.ignored += 1;
