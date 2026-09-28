@@ -595,7 +595,7 @@ jobs:
         run: cargo deny --locked check advisories
 
       - name: Check remote helper dependencies
-        run: cargo deny --manifest-path crates/antiburn-remote/Cargo.toml --locked check --config crates/antiburn-local/deny.toml bans licenses advisories
+        run: cargo deny --manifest-path crates/antiburn-remote/Cargo.toml --locked --config crates/antiburn-local/deny.toml check bans licenses advisories
 
       - name: Check desktop app licenses and dependency bans
         working-directory: apps/desktop/src-tauri

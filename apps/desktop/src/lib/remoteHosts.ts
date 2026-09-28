@@ -4,7 +4,7 @@ import { onSessionIndexChanged } from "./sessionIpc"
 
 export const REMOTE_HOST_LIMIT = 8
 
-export type RemoteHostErrorCategory =
+type RemoteHostErrorCategory =
   | "sshUnavailable"
   | "authenticationFailed"
   | "hostKeyFailed"
@@ -17,7 +17,7 @@ export type RemoteHostErrorCategory =
   | "cancelled"
   | "unknown"
 
-export interface RemoteHostError {
+interface RemoteHostError {
   category: RemoteHostErrorCategory
   message: string
 }
@@ -112,7 +112,7 @@ async function getRemoteSyncStatus(): Promise<RemoteSyncStatus> {
   return (await invoke<RemoteSyncStatus | null>("get_remote_sync_status")) ?? EMPTY_SYNC
 }
 
-export async function setRemoteSyncInterval(
+async function setRemoteSyncInterval(
   seconds: RemoteSyncIntervalSecs,
 ): Promise<RemoteSyncStatus> {
   if (!isTauri()) return { ...EMPTY_SYNC, intervalSecs: seconds }
