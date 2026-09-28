@@ -2454,6 +2454,20 @@ async fn repo_admission_keeps_a_folder_without_git_only_when_the_setting_is_on()
 }
 
 #[tokio::test]
+async fn repo_admission_rejects_a_cwd_that_git_cannot_read() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (workspace, session) = folder_of_repos(dir.path());
+    let missing = workspace.join("deleted").to_string_lossy().into_owned();
+
+    // Git fails for a reason other than "not a git repository", so the
+    // setting does not keep the session as a folder.
+    assert_eq!(
+        repo_admission(&session, &missing, true).await,
+        RepoAdmission::Rejected
+    );
+}
+
+#[tokio::test]
 async fn repo_admission_reads_only_file_transcripts() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (workspace, mut session) = folder_of_repos(dir.path());

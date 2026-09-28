@@ -1505,6 +1505,7 @@ async fn describe_with_gate(
     let mut rejected = Vec::new();
     let mut changed = Vec::new();
     let mut list_changed = false;
+    let mut gate = GateCounts::default();
     for chunk in logs.chunks(METADATA_CONCURRENCY) {
         let mut set = JoinSet::new();
         for log in chunk {
@@ -1543,12 +1544,14 @@ async fn describe_with_gate(
                         }
                         #[cfg(not(test))]
                         {
+                            gate.missing_cwd += 1;
                             rejected.push(record.key.clone());
                             continue;
                         }
                     }
                     let cwd = record.cwd.as_deref().expect("the CWD was checked above");
                     if ignored_paths::set_contains(ignored, cwd) {
+                        gate.ignored += 1;
                         rejected.push(record.key.clone());
                         continue;
                     }
@@ -1573,8 +1576,12 @@ async fn describe_with_gate(
                                     record.cwd = Some(root.to_string_lossy().into_owned());
                                     Some(root)
                                 }
-                                RepoAdmission::Folder => None,
+                                RepoAdmission::Folder => {
+                                    gate.folder += 1;
+                                    None
+                                }
                                 RepoAdmission::Rejected => {
+                                    gate.no_repo += 1;
                                     rejected.push(record.key.clone());
                                     continue;
                                 }
@@ -1589,6 +1596,7 @@ async fn describe_with_gate(
                                 Some(&cwd),
                                 &root.to_string_lossy(),
                             ) {
+                                gate.ignored += 1;
                                 rejected.push(record.key.clone());
                                 continue;
                             }
@@ -1599,10 +1607,23 @@ async fn describe_with_gate(
                         records.push(*record);
                     }
                 }
-                Ok((DescribeOutcome::Subagent(key), _)) => rejected.push(key),
+                Ok((DescribeOutcome::Subagent(key), _)) => {
+                    gate.subagent += 1;
+                    rejected.push(key);
+                }
                 Ok((DescribeOutcome::Skip, _)) | Err(_) => {}
             }
         }
+    }
+    if gate != GateCounts::default() {
+        ::tracing::debug!(
+            event = "scan_repo_gate",
+            missing_cwd = gate.missing_cwd,
+            ignored = gate.ignored,
+            subagent = gate.subagent,
+            no_repo = gate.no_repo,
+            folder = gate.folder,
+        );
     }
     // A rejected transcript's stale row, if any, is about to be evicted below
     // `describe_with_states`'s caller — either way the list must refetch to
@@ -1620,6 +1641,17 @@ async fn describe_with_gate(
         changed,
         list_changed,
     }
+}
+
+/// Why one scan pass rejected sessions, and how many it kept as folders. The
+/// counts go to the log, so a missing session has a reason.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct GateCounts {
+    missing_cwd: usize,
+    ignored: usize,
+    subagent: usize,
+    no_repo: usize,
+    folder: usize,
 }
 
 /// How the repository scan gate files a session.
@@ -1643,8 +1675,12 @@ async fn repo_admission(
     include_non_repo_folders: bool,
 ) -> RepoAdmission {
     let cwd = std::path::Path::new(cwd);
-    if let Ok(root) = git::repo_root_at(cwd).await {
-        return RepoAdmission::Repository(root);
+    match git::repo_root_if_any_at(cwd).await {
+        Ok(Some(root)) => return RepoAdmission::Repository(root),
+        // Only a CWD that Git reports as outside every repository can move
+        // to a repository below it or stay as a folder.
+        Ok(None) => {}
+        Err(_) => return RepoAdmission::Rejected,
     }
     if record.source_kind == "file"
         && let Some(root) =

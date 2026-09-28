@@ -113,9 +113,13 @@ distinct touched folders as the session CWD. The count is folders, not edits.
 The scan maps linked worktrees to the canonical main root and rejects missing
 or unresolved CWDs. The Sources setting "Include folders without git"
 (`includeNonRepoFolders`, off by default) keeps a session whose CWD resolves to
-no repository under its recorded CWD, with no repository root. The ignored-path
+no repository under its recorded CWD, with no repository root. The inference
+and this setting apply only when Git reports that the CWD is not in a
+repository; any other Git failure rejects the session. The ignored-path
 set still applies to that CWD. A disabled repository is rejected when either its CWD or
-its canonical root is in the existing ignored-path set.
+its canonical root is in the existing ignored-path set. A scan pass that
+rejects a session, or keeps one as a folder, writes a `scan_repo_gate` debug
+event with the count for each reason.
 Newly discovered repositories remain enabled by default.
 
 | `SourceFormat`                 | Agent         | Native source                                                                                                           | Discovery and framing                                                                                                                                                                                                                                                        | Parsed facts                                                                                                                                                                                                                                                                            | State                                                                                                                   |
