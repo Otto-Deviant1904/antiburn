@@ -278,7 +278,10 @@ tag only after the commit is on `main`.
    updater bundle, a detached signature, and a fragment of `latest.json`. These
    are the only jobs that can see a signing credential, and none may save a
    cache after doing so.
-5. **draft** — adds the root `install.sh` and `install.ps1`, then merges the
+5. **remote-helper** — builds static Linux x64 and ARM64 helpers on native
+   runners, runs their tests, checks static linkage, and verifies archive
+   extraction. It has no signing or repository-write credentials.
+6. **draft** — requires both helper archives, adds the root `install.sh` and `install.ps1`, then merges the
    fragments into `latest.json` with immutable
    tag-specific URLs; verifies all four platform keys, asset presence, detached
    signatures, reported signing modes, and `SHA256SUMS`; attests provenance over
@@ -295,6 +298,14 @@ by each target, and the complete checksum table. Before the draft exists, the
 workflow has already required the four platform keys, immutable URLs, matching
 detached signatures, present assets, and a successful `sha256sum --check`.
 Those are machine gates, not boxes for a person to repeat.
+
+The release includes `antiburn-remote-<version>-x86_64-unknown-linux-musl.tar.gz`
+and `antiburn-remote-<version>-aarch64-unknown-linux-musl.tar.gz`. Both are covered
+by `SHA256SUMS`. Build provenance is included when the public-repository
+attestation steps run; private-repository releases skip those steps. Their archive version follows the application
+release; the helper's wire protocol version is a separate compatibility check.
+Follow [remote host setup](../remote-sessions.md) to exercise SSH discovery and
+offline cached analysis on a Linux host before publishing.
 
 Open the draft release and perform the checks that need a real reader or
 installed operating system:

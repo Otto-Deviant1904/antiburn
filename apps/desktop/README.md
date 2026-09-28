@@ -5,7 +5,9 @@ companion around the local [`antiburn-local`](../../crates/antiburn-local) engin
 
 The app discovers the coding-agent sessions already on this machine, analyzes
 them with the engine, and shows activity, per-session analysis, and
-API-equivalent cost estimates. Everything runs on the device, as you: antiburn
+API-equivalent cost estimates. Settings → Sources can also sync supported sessions
+from configured Linux SSH hosts into a private local cache; see
+[remote sessions](../../docs/remote-sessions.md). Analysis runs on this device, as you: antiburn
 needs no antiburn account, server, or backend of any kind, and nothing about
 your sessions is uploaded. It downloads public model prices from models.dev at
 startup and hourly while running; the request contains no session data or
@@ -207,7 +209,8 @@ Settings teardown, and the memory rules behind those policies.
   notification still identifies the menu-bar companion.
 - **Settings.** An ordinary decorated window, created on demand and destroyed
   on close. A source list on the left, one pane on the right; every control
-  writes through immediately, so there is no Save button and no dirty state.
+  writes through immediately. Remote-host connection forms save explicitly after
+  validation; canceling a form preserves the existing host configuration.
   General → Application controls the menu-bar or system-tray icon. macOS also
   controls Dock visibility and always keeps at least one entry point visible.
   Windows and Linux keep the ordinary application launcher as their recovery

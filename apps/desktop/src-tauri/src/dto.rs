@@ -44,6 +44,7 @@ pub struct ActivityEntry {
     /// `cli`, `ide_desktop`, or `unknown`.
     pub surface: String,
     pub wsl_distro: Option<String>,
+    pub remote_host_id: Option<String>,
     pub title: Option<String>,
     /// Whether this session was branched from another local session.
     pub has_fork_parent: bool,
@@ -69,6 +70,7 @@ pub struct SessionIdentity {
     pub agent: String,
     pub session_id: String,
     pub wsl_distro: Option<String>,
+    pub remote_host_id: Option<String>,
 }
 
 /// One end of a local fork relation.
@@ -157,6 +159,7 @@ pub struct SessionAnalysis {
     pub supports_analysis: bool,
     pub title: Option<String>,
     pub wsl_distro: Option<String>,
+    pub remote_host_id: Option<String>,
     pub is_active: bool,
     /// Cost of the parent transcript plus every sub-agent it launched.
     ///
@@ -584,6 +587,7 @@ pub struct SessionLimitAllocation {
     pub agent: String,
     pub session_id: String,
     pub wsl_distro: Option<String>,
+    pub remote_host_id: Option<String>,
     pub metric: SessionLimitMetric,
     pub provider: String,
     pub display_name: String,
@@ -691,6 +695,7 @@ pub struct QuotaContributionPayload {
     pub agent: String,
     pub session_id: String,
     pub wsl_distro: Option<String>,
+    pub remote_host_id: Option<String>,
     pub bucket_start_epoch: i64,
     pub usd: f64,
     pub percent: Option<f64>,
@@ -703,6 +708,7 @@ pub struct QuotaSessionTotalPayload {
     pub agent: String,
     pub session_id: String,
     pub wsl_distro: Option<String>,
+    pub remote_host_id: Option<String>,
     pub title: Option<String>,
     pub usd: f64,
     pub percent: Option<f64>,
@@ -785,6 +791,7 @@ pub struct SessionQuotaRequest {
     pub agent: String,
     pub session_id: String,
     pub wsl_distro: Option<String>,
+    pub remote_host_id: Option<String>,
 }
 
 /// The quota period one [`SessionQuotaEntryPayload`] falls in, without the
@@ -1520,6 +1527,7 @@ pub struct SessionHygieneRequest {
     pub agent: String,
     pub session_id: String,
     pub wsl_distro: Option<String>,
+    pub remote_host_id: Option<String>,
 }
 
 /// One session hygiene status on the IPC boundary.
@@ -2993,6 +3001,7 @@ mod tests {
                     agent: "claude-code".to_string(),
                     session_id: "s1".to_string(),
                     wsl_distro: None,
+                    remote_host_id: None,
                     bucket_start_epoch: 0,
                     usd: 1.0,
                     percent: Some(2.0),
@@ -3001,6 +3010,7 @@ mod tests {
                     agent: "claude-code".to_string(),
                     session_id: "s1".to_string(),
                     wsl_distro: None,
+                    remote_host_id: None,
                     title: Some("Fix the bug".to_string()),
                     usd: 1.0,
                     percent: Some(2.0),

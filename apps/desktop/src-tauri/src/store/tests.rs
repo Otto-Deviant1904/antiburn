@@ -16,6 +16,7 @@ mod evidence_tests;
 mod reader_tests;
 mod reconcile_tests;
 mod remediation_tests;
+mod remote_count_tests;
 mod resume_tests;
 mod revision_tests;
 mod settings_tests;
@@ -2070,58 +2071,71 @@ fn usage_evidence_joins_the_analysis_and_keeps_sessions_that_have_none() {
 
 #[test]
 fn close_account_switches_keep_completed_sessions_with_the_previous_account() {
-    let store = store();
-    store.set_internal_value("internal:providerAccountRolloutV1", "1000");
-    let mut completed = session("completed-a", 2_000);
-    completed.key.agent = "pi".into();
-    let mut spanning = session("spanning", 2_000);
-    spanning.key.agent = "pi".into();
-    let mut old = session("old", 900);
-    old.key.agent = "pi".into();
-    store
-        .upsert_sessions(
-            &[completed, spanning.clone(), old],
-            &crate::agents::evidence_cohort(),
-        )
-        .unwrap();
-
-    let first = "a".repeat(64);
-    let second = "b".repeat(64);
-    store
-        .observe_provider_account("pi", "anthropic", &first, 2_025, "tool_oauth")
-        .unwrap();
-    store
-        .observe_provider_account("pi", "anthropic", &first, 2_050, "tool_oauth")
-        .unwrap();
-    spanning.updated_at_epoch = Some(2_075);
-    let mut new = session("new-b", 2_075);
-    new.key.agent = "pi".into();
-    store
-        .upsert_sessions(&[spanning, new], &crate::agents::evidence_cohort())
-        .unwrap();
-    store
-        .observe_provider_account("pi", "anthropic", &second, 2_100, "tool_oauth")
-        .unwrap();
-
-    let accounts_for = |session_id: &str| {
-        let connection = store.lock();
-        let mut statement = connection
-            .prepare(
-                "SELECT account_key FROM session_provider_account
-                  WHERE agent = 'pi' AND session_id = ?1
-                  ORDER BY account_key",
+    for environment in ["native", "wsl:Ubuntu", "ssh:host"] {
+        let store = store();
+        let session = |id: &str, epoch| {
+            let mut row = session(id, epoch);
+            row.key.environment_key = environment.into();
+            row
+        };
+        store.set_internal_value("internal:providerAccountRolloutV1", "1000");
+        let mut completed = session("completed-a", 2_000);
+        completed.key.agent = "pi".into();
+        let mut spanning = session("spanning", 2_000);
+        spanning.key.agent = "pi".into();
+        let mut old = session("old", 900);
+        old.key.agent = "pi".into();
+        store
+            .upsert_sessions(
+                &[completed, spanning.clone(), old],
+                &crate::agents::evidence_cohort(),
             )
             .unwrap();
-        statement
-            .query_map([session_id], |row| row.get::<_, String>(0))
-            .unwrap()
-            .map(Result::unwrap)
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(accounts_for("completed-a"), vec![first.clone()]);
-    assert_eq!(accounts_for("new-b"), vec![second.clone()]);
-    assert_eq!(accounts_for("spanning"), vec![first, second]);
-    assert!(accounts_for("old").is_empty());
+
+        let first = "a".repeat(64);
+        let second = "b".repeat(64);
+        store
+            .observe_provider_account("pi", "anthropic", &first, 2_025, "tool_oauth")
+            .unwrap();
+        store
+            .observe_provider_account("pi", "anthropic", &first, 2_050, "tool_oauth")
+            .unwrap();
+        spanning.updated_at_epoch = Some(2_075);
+        let mut new = session("new-b", 2_075);
+        new.key.agent = "pi".into();
+        store
+            .upsert_sessions(&[spanning, new], &crate::agents::evidence_cohort())
+            .unwrap();
+        store
+            .observe_provider_account("pi", "anthropic", &second, 2_100, "tool_oauth")
+            .unwrap();
+
+        let accounts_for = |session_id: &str| {
+            let connection = store.lock();
+            let mut statement = connection
+                .prepare(
+                    "SELECT account_key FROM session_provider_account
+                  WHERE agent = 'pi' AND session_id = ?1
+                  ORDER BY account_key",
+                )
+                .unwrap();
+            statement
+                .query_map([session_id], |row| row.get::<_, String>(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect::<Vec<_>>()
+        };
+        if environment.starts_with("ssh:") {
+            assert!(accounts_for("completed-a").is_empty());
+            assert!(accounts_for("new-b").is_empty());
+            assert!(accounts_for("spanning").is_empty());
+            continue;
+        }
+        assert_eq!(accounts_for("completed-a"), vec![first.clone()]);
+        assert_eq!(accounts_for("new-b"), vec![second.clone()]);
+        assert_eq!(accounts_for("spanning"), vec![first, second]);
+        assert!(accounts_for("old").is_empty());
+    }
 }
 
 #[test]
@@ -2450,4 +2464,43 @@ fn turn_row(turn_index: u64) -> TurnRow {
         subagent_launches: 0,
         content: Vec::new(),
     }
+}
+
+#[test]
+fn local_overview_rows_survive_more_than_the_shared_remote_limit() {
+    let store = store();
+    let mut rows = (0..501)
+        .map(|index| {
+            let mut row = session(&format!("remote-{index}"), 3000 + index);
+            row.key.environment_key = "ssh:host".into();
+            row
+        })
+        .collect::<Vec<_>>();
+    let native = session("native", 1000);
+    let mut wsl = session("wsl", 2000);
+    wsl.key.environment_key = "wsl:ubuntu".into();
+    wsl.wsl_distro = Some("Ubuntu".into());
+    rows.extend([native, wsl]);
+    store
+        .upsert_sessions(&rows, &crate::agents::evidence_cohort())
+        .unwrap();
+    let all = store.recent_sessions(0, 500).unwrap();
+    assert_eq!(all.len(), 500);
+    assert!(all.iter().all(|row| row.key.remote_host_id().is_some()));
+    let local = store
+        .recent_local_sessions_excluding(0, 6, &DisabledAgents::default())
+        .unwrap();
+    assert_eq!(
+        local
+            .iter()
+            .map(|row| row.key.session_id.as_str())
+            .collect::<Vec<_>>(),
+        ["wsl", "native"]
+    );
+    assert!(
+        store
+            .recent_local_sessions_excluding(0, 6, &DisabledAgents::parse("claude-code"))
+            .unwrap()
+            .is_empty()
+    );
 }

@@ -1053,6 +1053,31 @@ impl Store {
         limit: usize,
         excluded_agents: &DisabledAgents,
     ) -> Result<Vec<SessionRecord>> {
+        self.recent_sessions_with_origin(since_epoch, limit, excluded_agents, false)
+    }
+
+    /// Filter local origins before the row limit so remote rows cannot hide them.
+    pub fn recent_local_sessions_excluding(
+        &self,
+        since_epoch: i64,
+        limit: usize,
+        excluded_agents: &DisabledAgents,
+    ) -> Result<Vec<SessionRecord>> {
+        self.recent_sessions_with_origin(since_epoch, limit, excluded_agents, true)
+    }
+
+    fn recent_sessions_with_origin(
+        &self,
+        since_epoch: i64,
+        limit: usize,
+        excluded_agents: &DisabledAgents,
+        local_only: bool,
+    ) -> Result<Vec<SessionRecord>> {
+        let origin_predicate = if local_only {
+            " AND (environment_key = 'native' OR environment_key LIKE 'wsl:%')"
+        } else {
+            ""
+        };
         let excluded = excluded_agents.slugs();
         let exclusion_predicate = if excluded.is_empty() {
             String::new()
@@ -1070,7 +1095,9 @@ impl Store {
         // the plan test keep one constant.
         let sql = RECENT_SESSIONS_SQL.replace(
             "WHERE COALESCE(updated_at_epoch, 0) >= ?1",
-            &format!("WHERE COALESCE(updated_at_epoch, 0) >= ?1{exclusion_predicate}"),
+            &format!(
+                "WHERE COALESCE(updated_at_epoch, 0) >= ?1{origin_predicate}{exclusion_predicate}"
+            ),
         );
         let mut statement = connection.prepare(&sql)?;
         let mut values: Vec<rusqlite::types::Value> = vec![
@@ -1975,6 +2002,50 @@ impl Store {
         Ok(removed.map(|incarnation| (incarnation, revision_of(&connection))))
     }
 
+    /// Count saved sessions by immutable host identity, without a discovery window.
+    pub(crate) fn remote_session_counts(&self) -> Result<HashMap<String, u32>> {
+        let connection = self.lock();
+        let mut statement = connection.prepare(
+            "SELECT substr(environment_key, 5), COUNT(*) FROM session
+             WHERE environment_key LIKE 'ssh:%' GROUP BY environment_key",
+        )?;
+        Ok(statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<HashMap<_, _>>>()?)
+    }
+
+    /// Delete every indexed row owned by one immutable remote-host identity.
+    pub fn delete_remote_host(&self, host_id: &str) -> Result<(usize, Revision)> {
+        anyhow::ensure!(
+            !host_id.is_empty() && !host_id.contains(['/', '\\']),
+            "invalid remote host ID"
+        );
+        let environment = format!("ssh:{host_id}");
+        let mut connection = self.lock();
+        let tx = connection.transaction()?;
+        let keys = {
+            let mut statement =
+                tx.prepare("SELECT agent, session_id FROM session WHERE environment_key = ?1")?;
+            statement
+                .query_map([&environment], |row| {
+                    Ok(SessionKey::new(
+                        &environment,
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let mut removed = 0;
+        for key in keys {
+            if delete_session_in(&tx, &key)?.is_some() {
+                removed += 1;
+            }
+        }
+        tx.commit()?;
+        Ok((removed, revision_of(&connection)))
+    }
+
     /* --------------------------------------------------------------------
      * Derived analysis
      * ----------------------------------------------------------------- */
@@ -2609,6 +2680,7 @@ impl Store {
                 AND a.agent = s.agent
                 AND a.session_id = s.session_id
               WHERE COALESCE(s.updated_at_epoch, 0) >= ?1
+                AND s.environment_key NOT LIKE 'ssh:%'
               ORDER BY COALESCE(s.updated_at_epoch, 0) DESC",
         )?;
         let rows = statement.query_map(params![since_epoch], |row| {
@@ -2690,8 +2762,9 @@ impl Store {
                 provenance, confidence, first_seen_at
              )
              SELECT environment_key, agent, session_id, ?2, ?3, ?7, 'direct', ?4
-               FROM session
+              FROM session
               WHERE agent = ?1
+                AND environment_key NOT LIKE 'ssh:%'
                 AND unixepoch(first_seen_at) >= ?5
                 AND COALESCE(updated_at_epoch, 0) BETWEEN MAX(?5, ?6 - 600) AND ?6
                 AND COALESCE(updated_at_epoch, 0) > COALESCE((

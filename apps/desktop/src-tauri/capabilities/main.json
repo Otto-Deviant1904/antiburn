@@ -50,6 +50,7 @@
     "allow-main-window-ready",
     "allow-note-interaction",
     "allow-open-settings-window",
+    "allow-open-remote-helper-downloads",
     "allow-open-burn-check-sample",
     "allow-prepare-auto-fix-burn-check-target",
     "allow-main-window-content-ready",

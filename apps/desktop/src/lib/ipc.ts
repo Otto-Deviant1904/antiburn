@@ -322,7 +322,7 @@ export type Interaction =
       step: "welcome" | "agents_detected" | "sources_and_repos" | "ready"
     }
   | { kind: "projectFolderAction"; action: "open" | "copy"; outcome: "succeeded" | "failed" }
-  | { kind: "sessionOpened"; agent: string; environment: "native" | "wsl" }
+  | { kind: "sessionOpened"; agent: string; environment: "native" | "wsl" | "remote" }
   | { kind: "surfaceViewed"; surface: Surface; origin: SurfaceOrigin }
   | {
       kind: "surfaceStateObserved"
@@ -408,6 +408,13 @@ export type SessionFilterAction =
   | "spend_notable"
   | "spend_material"
   | "spend_all"
+  | "source_all"
+  | "source_local_added"
+  | "source_local_removed"
+  | "source_remote_all_added"
+  | "source_remote_all_removed"
+  | "source_remote_host_added"
+  | "source_remote_host_removed"
   | "cleared_all"
 
 function isNativePeekInteraction(interaction: Interaction): boolean {
@@ -765,9 +772,13 @@ export async function removeScanRoot(path: string): Promise<string[]> {
 }
 
 /** Open the project directory through the native file manager. */
-export async function openProjectFolder(path: string): Promise<void> {
+export type ProjectFolderTarget =
+  | { kind: "session"; environmentKey: string; agent: string; sessionId: string }
+  | { kind: "burnCheck"; actionId: string }
+
+export async function openProjectFolder(target: ProjectFolderTarget): Promise<void> {
   if (!hasShell()) throw new Error("The native file manager is unavailable")
-  await invoke("open_project_folder", { path })
+  await invoke("open_project_folder", { target })
 }
 
 /** Reveal a transcript in the platform's file manager. */

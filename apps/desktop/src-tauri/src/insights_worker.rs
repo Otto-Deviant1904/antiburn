@@ -151,6 +151,9 @@ fn run_record_pass(
     claim_fence: i64,
     store: Store,
 ) -> PassFuture {
+    if record.key.remote_host_id().is_some() {
+        return crate::remote_cache::run_pass(record.clone(), signal, claim_fence, store);
+    }
     run_record_pass_with(
         record,
         signal,
@@ -221,6 +224,15 @@ fn run_record_pass_with(
 pub fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<()> {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
+        let restore_store = app.state::<Store>().inner().clone();
+        if let Err(error) = tauri::async_runtime::spawn_blocking(move || {
+            crate::remote_cache::restore_fork_companions(&restore_store)
+        })
+        .await
+        .unwrap_or_else(|error| Err(error.into()))
+        {
+            ::tracing::warn!(event = "remote_fork_companion_restore_failed", error = %error);
+        }
         let mut workers = JoinSet::new();
         workers.spawn(run_worker(app.clone()));
         let handle = app.state::<WorkerHandle>();
