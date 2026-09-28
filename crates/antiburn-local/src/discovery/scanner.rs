@@ -1017,18 +1017,19 @@ pub async fn infer_repo_root_below_cwd(
         .await
         .ok()?;
     let content = String::from_utf8_lossy(&head);
+    // Compare canonical paths: Git reports canonical roots, and a symlink
+    // below the CWD must not take a candidate outside it.
+    let cwd = tokio::fs::canonicalize(cwd).await.ok()?;
 
     let mut roots: Vec<(std::path::PathBuf, usize)> = Vec::new();
     let mut probes = 0;
     for candidate in extract_candidate_cwds_from_transcript(&content) {
-        let candidate = Path::new(&candidate);
-        if candidate == cwd || !candidate.starts_with(cwd) {
-            continue;
-        }
-        // Git reports canonical roots, so compare canonical paths.
-        let Ok(candidate) = tokio::fs::canonicalize(candidate).await else {
+        let Ok(candidate) = tokio::fs::canonicalize(&candidate).await else {
             continue;
         };
+        if candidate == cwd || !candidate.starts_with(&cwd) {
+            continue;
+        }
         if let Some((_, count)) = roots
             .iter_mut()
             .find(|(root, _)| candidate.starts_with(root))
@@ -2841,6 +2842,27 @@ also not json {{{{
         let root = infer_repo_root_below_cwd(&transcript, &workspace.join("quiet/src")).await;
 
         assert_eq!(root, None);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn infer_repo_root_ignores_a_symlink_that_leaves_the_cwd() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        git_init(&dir.path().join("outside"));
+        std::os::unix::fs::symlink(dir.path().join("outside"), workspace.join("link")).unwrap();
+        let transcript = write_temp_file(
+            dir.path(),
+            "session.jsonl",
+            &tool_use_line(&workspace.join("link/README.md")),
+        )
+        .await;
+
+        assert_eq!(
+            infer_repo_root_below_cwd(&transcript, &workspace).await,
+            None
+        );
     }
 
     #[tokio::test]

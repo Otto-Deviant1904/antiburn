@@ -1567,11 +1567,14 @@ async fn describe_with_gate(
                     {
                         let cwd = cwd.to_string();
                         let mut record = record;
+                        let mut changed_record = changed_record;
                         let root =
                             match repo_admission(&record, &cwd, include_non_repo_folders).await {
                                 RepoAdmission::Repository(root) => Some(root),
                                 RepoAdmission::InferredRepository(root) => {
                                     record.cwd = Some(root.to_string_lossy().into_owned());
+                                    // Persist the new CWD, also for a reused record.
+                                    changed_record = true;
                                     Some(root)
                                 }
                                 RepoAdmission::Folder => {
