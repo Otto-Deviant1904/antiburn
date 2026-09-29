@@ -329,6 +329,17 @@ impl ScanController {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         match pending.as_ref() {
+            // A manual rescan is the only trigger that widens discovery, so a
+            // pending automatic trigger yields to it. Coalescing the other way
+            // would drop the only pass that covers the whole index.
+            Some(existing) if matches!(trigger, ScanTrigger::ManualRescan) => {
+                ::tracing::debug!(
+                    event = "scan_request_coalesced",
+                    kept = trigger.label(),
+                    dropped = existing.label(),
+                );
+                *pending = Some(trigger);
+            }
             Some(existing) => {
                 ::tracing::debug!(
                     event = "scan_request_coalesced",
@@ -755,6 +766,14 @@ pub(crate) async fn try_run_pass(
             // the tick. Logging the trigger turns that into a visible stream
             // of drops instead.
             ::tracing::debug!(event = "scan_request_dropped", trigger = trigger.label());
+            // A dropped automatic request is fine, because the scheduler runs
+            // a pass on its own tick. A dropped manual rescan is not: it is
+            // the only request that widens discovery, so under a 30-day or
+            // 90-day retention setting no later pass would cover the same
+            // ground. Queue it for the scheduler instead of losing it.
+            if matches!(trigger, ScanTrigger::ManualRescan) {
+                controller.request(ScanTrigger::ManualRescan);
+            }
             return None;
         }
         let started = controller.update(|status| {

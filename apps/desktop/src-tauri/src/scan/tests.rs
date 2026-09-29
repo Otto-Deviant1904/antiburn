@@ -1658,7 +1658,7 @@ fn a_fresh_controller_reports_a_clean_initial_status() {
 async fn a_second_request_before_the_scheduler_wakes_is_coalesced() {
     let controller = ScanController::default();
     controller.request(ScanTrigger::SettingsTransition);
-    controller.request(ScanTrigger::ManualRescan);
+    controller.request(ScanTrigger::RepositoryToggle);
 
     {
         let pending = controller
@@ -1676,6 +1676,38 @@ async fn a_second_request_before_the_scheduler_wakes_is_coalesced() {
     // ...and a second wait finds nothing further queued.
     let second = tokio::time::timeout(Duration::from_millis(0), controller.kick.notified()).await;
     assert!(second.is_err(), "only one notify should have been queued");
+}
+
+#[test]
+fn a_manual_rescan_replaces_a_pending_automatic_trigger() {
+    let controller = ScanController::default();
+    controller.request(ScanTrigger::SettingsTransition);
+    controller.request(ScanTrigger::ManualRescan);
+
+    let pending = controller
+        .pending_trigger
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(
+        matches!(pending.as_ref(), Some(ScanTrigger::ManualRescan)),
+        "the manual rescan must survive, because it is the only trigger that widens discovery"
+    );
+}
+
+#[test]
+fn a_second_automatic_request_is_still_coalesced() {
+    let controller = ScanController::default();
+    controller.request(ScanTrigger::Launch);
+    controller.request(ScanTrigger::SettingsTransition);
+
+    let pending = controller
+        .pending_trigger
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(
+        matches!(pending.as_ref(), Some(ScanTrigger::Launch)),
+        "two automatic triggers coalesce to the first, as before"
+    );
 }
 
 #[test]
