@@ -20,10 +20,18 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
-## [0.8.1] - 2026-09-29
+## [0.9.0] - 2026-09-29
+
+This release also contains the changes from 0.8.0 and 0.8.1, which were tagged
+but not published.
 
 ### Added
 
+- Settings → Sources and onboarding have an "Include folders without git"
+  switch. Turn it on to keep sessions started in a folder that isn't a
+  repository. It is off by default. A session started in a folder that holds
+  several repos is now filed under the repo it worked in, instead of being
+  dropped.
 - Remote sessions: add up to eight Linux computers over SSH in Settings →
   Sources, and their Claude Code and Codex sessions appear next to your local
   ones. Sync by hand or on a schedule, and pick hosts with the Source filter.
@@ -40,6 +48,8 @@ CI changes, and documentation that no user acts on stay out — see
 
 ### Fixed
 
+- The "No repositories found" message in Settings → Sources is centered in its
+  card instead of being cut off at the top.
 - Claude usage no longer says you are signed out while Claude Code is still
   signed in. When antiburn is opened from Finder it now finds the `claude`
   command in the usual install places to refresh an expired sign-in.
