@@ -2478,3 +2478,47 @@ async fn repo_admission_reads_only_file_transcripts() {
         RepoAdmission::Rejected
     );
 }
+
+#[test]
+fn a_recurring_pass_keeps_the_narrow_window() {
+    let now = 1_700_000_000;
+    for trigger in [
+        ScanTrigger::Launch,
+        ScanTrigger::Tick,
+        ScanTrigger::WatcherOverflow,
+        ScanTrigger::SettingsTransition,
+        ScanTrigger::RepositoryToggle,
+        ScanTrigger::ScanRootAdded,
+        ScanTrigger::IndexCleared,
+    ] {
+        assert_eq!(
+            discovery_window_secs(90, &trigger, now),
+            i64::from(crate::store::MAX_ACTIVITY_DAYS) * 86_400,
+            "{trigger:?} must not widen discovery on its own",
+        );
+    }
+}
+
+#[test]
+fn unlimited_retention_discovers_every_age() {
+    let now = 1_700_000_000;
+    for trigger in [ScanTrigger::Launch, ScanTrigger::Tick] {
+        assert_eq!(
+            discovery_window_secs(crate::store::RETAIN_SESSION_DATA_FOREVER, &trigger, now),
+            now,
+            "unlimited retention must not hide a session from discovery",
+        );
+    }
+}
+
+#[test]
+fn a_manual_rescan_discovers_every_age_under_any_retention() {
+    let now = 1_700_000_000;
+    for retention in [30, 90, crate::store::RETAIN_SESSION_DATA_FOREVER] {
+        assert_eq!(
+            discovery_window_secs(retention, &ScanTrigger::ManualRescan, now),
+            now,
+            "a manual rescan reads every session file from the start",
+        );
+    }
+}

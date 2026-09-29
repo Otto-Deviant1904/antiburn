@@ -901,6 +901,28 @@ struct PassSummary {
     re_described: usize,
 }
 
+/// The age limit discovery applies to one pass, in seconds.
+///
+/// A recurring pass keeps the narrow window, so background work does not grow
+/// with the size of the machine. Two cases cover the whole index instead:
+///
+/// - Unlimited retention. A retention setting that promises to keep every
+///   session cannot reach sessions that discovery never lists, and the
+///   narrow window is the only thing that hides them.
+/// - A manual rescan. Settings › General › Historical scan tells the reader
+///   that it reads every session file from the start.
+///
+/// Discovery treats a limit of `now` as no limit: the cutoff becomes zero and
+/// every session qualifies. See `discovery::mod`.
+fn discovery_window_secs(session_data_retention_days: i32, trigger: &ScanTrigger, now: i64) -> i64 {
+    if session_data_retention_days == crate::store::RETAIN_SESSION_DATA_FOREVER
+        || matches!(trigger, ScanTrigger::ManualRescan)
+    {
+        return now;
+    }
+    i64::from(crate::store::MAX_ACTIVITY_DAYS) * 86_400
+}
+
 /// The body of one pass. Split out so [`run_pass`] owns only the in-flight
 /// bookkeeping and the events.
 ///
@@ -917,10 +939,11 @@ async fn pass(
 ) -> anyhow::Result<PassSummary> {
     let store = app.state::<Store>();
     let now = unix_now();
-    // Discovery always covers the widest list the UI can request, so changing
-    // the display window is instant. The retention setting controls older rows.
-    let window_days = i64::from(crate::store::MAX_ACTIVITY_DAYS);
-    let since_secs = window_days * 86_400;
+    let since_secs = discovery_window_secs(
+        store.settings_snapshot().session_data_retention_days,
+        trigger,
+        now,
+    );
 
     let ignored = ignored_paths::load_ignored(store.state_dir(), IGNORE_SCOPE);
     let home = home_dir().unwrap_or_default();

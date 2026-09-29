@@ -172,6 +172,13 @@ index lighter. Deleting a transcript from disk does not immediately delete what
 antiburn derived from it; that data follows the selected retention period unless the
 session or local index is deleted first. The agents' own files are never touched.
 
+**Retention also sets how far discovery looks.** A 30-day or 90-day setting keeps the
+recurring discovery window at 14 days. Forever discovers every age the app can reach,
+because a retention setting cannot keep a session that discovery never lists.
+Settings → General › Historical scan reads every session file from the start under
+any retention setting. Settings → General › Show the last changes what the session list
+and popover display; it does not change what is indexed.
+
 **Deletion.** antiburn removes only records it created itself. It cannot and will not
 delete a coding agent's own transcript — that is the agent's file, and removing a
 conversation belongs in the agent's own interface.
