@@ -17,6 +17,23 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-09-29
+
+### Added
+
+- Add `platform::git::repo_root_if_any_at`. It returns `Ok(None)` only when
+  Git reports that the directory is not in a repository. Other failures, such
+  as a missing directory, a missing `git` executable, or a repository that Git
+  refuses to read, are errors. Git runs with `LC_ALL=C` so that the message
+  check does not depend on the locale. `repo_root_at` now calls it and keeps
+  its old behaviour.
+- Add `discovery::scanner::infer_repo_root_below_cwd`. When a session's
+  recorded `cwd` is a parent folder of repositories, it reads the head of the
+  transcript and returns the repository that holds the most distinct candidate
+  folders below `cwd`. The count is folders, not edits. A tie goes to the
+  repository that the transcript touched first. It probes at most eight
+  candidates and returns `None` when none resolves to a repository.
+
 ## [0.12.0] - 2026-09-29
 
 ### Added
