@@ -387,7 +387,13 @@ application release.
    (`cargo update --manifest-path apps/desktop/src-tauri/Cargo.toml --package antiburn-local`):
    the shell path-depends on the engine, so its lockfile records the engine
    version, and the locked desktop CI legs and the license check fail on the
-   mismatch otherwise.
+   mismatch otherwise. Refresh the remote helper's lockfile as well
+   (`cargo update --manifest-path crates/antiburn-remote/Cargo.toml --package antiburn-local`):
+   it path-depends on the engine too, and the release's remote-helper jobs
+   build with `--locked`. Pull request CI does not run those jobs for a
+   release-only change, so the mismatch shows first in the app release run.
+   If `cargo update` also moves unrelated entries in either lockfile, edit
+   only the `antiburn-local` version line by hand instead.
 2. Review, merge, then tag `antiburn-local-v<version>` and push the tag.
 3. The workflow requires the successful main push run for the exact tag SHA,
    then packages a deterministic source tarball with `LICENSE`, `NOTICE`,
