@@ -192,7 +192,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # `--target all` covers every platform's conditional dependencies, so one
-      # inventory describes all four release targets rather than the host's.
+      # inventory describes all five release targets rather than the host's.
       # The engine appears in here as a component: it is a path dependency of
       # the shell, which is what actually ships.
       - name: Inventory the Rust dependency tree
@@ -287,10 +287,25 @@ jobs:
             artifact: linux-x64
             arch_label: x64
             updater_platform: linux-x86_64-appimage
+            linuxdeploy_asset_id: "538917371"
+            linuxdeploy_sha256: "36a2d7e274d12e1050d0e9ecfe11d339ed54720b2bec464c286d53f8b07f5c62"
+          # The same glibc-floor reasoning: ubuntu-24.04-arm pins the ARM64
+          # floor at glibc 2.39.
+          - name: Linux ARM64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            bundles: appimage,deb
+            artifact: linux-arm64
+            arch_label: aarch64
+            updater_platform: linux-aarch64-appimage
+            linuxdeploy_asset_id: "538917074"
+            linuxdeploy_sha256: "556ab80baa98e600aa80f0dcedfb70bca0e1ce7e9f147fb345be3fcc3e91b2b1"
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      # The ARM64 runner images use the ports mirrors, so the sed covers
+      # those forms as well; they match nothing on the x64 images.
       - name: Use Canonical Ubuntu package archive
         if: runner.os == 'Linux'
         run: |
@@ -298,6 +313,8 @@ jobs:
             -exec sed -i \
               -e 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
               -e 's|https://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+              -e 's|http://azure.ports.ubuntu.com/ubuntu-ports|http://ports.ubuntu.com/ubuntu-ports|g' \
+              -e 's|https://azure.ports.ubuntu.com/ubuntu-ports|http://ports.ubuntu.com/ubuntu-ports|g' \
               {} +
 
       # WebKitGTK, GTK and the AppIndicator tray are the shell's Linux
@@ -583,16 +600,19 @@ jobs:
 
       # Tauri 2.11.4 caches a 2024 linuxdeploy build that bundles libwayland-client.
       # This pinned build follows the AppImage graphics-library exclusions.
+      # The asset id and hash are per-architecture matrix values; the cache
+      # file name must match what tauri-bundler looks for on this host, and
+      # `uname -m` gives that same architecture label.
       - name: Install the pinned Linux AppImage bundler
         if: runner.os == 'Linux'
         shell: bash
         env:
-          LINUXDEPLOY_ASSET_ID: "538917371"
-          LINUXDEPLOY_SHA256: "36a2d7e274d12e1050d0e9ecfe11d339ed54720b2bec464c286d53f8b07f5c62"
+          LINUXDEPLOY_ASSET_ID: ${{ matrix.linuxdeploy_asset_id }}
+          LINUXDEPLOY_SHA256: ${{ matrix.linuxdeploy_sha256 }}
         run: |
           set -euo pipefail
           tools="${XDG_CACHE_HOME:-$HOME/.cache}/tauri"
-          destination="${tools}/linuxdeploy-x86_64.AppImage"
+          destination="${tools}/linuxdeploy-$(uname -m).AppImage"
           mkdir -p "$tools"
           curl --fail --location --retry 3 \
             --header 'Accept: application/octet-stream' \
@@ -885,19 +905,19 @@ jobs:
           cp install.sh install.ps1 dist/
 
           mapfile -t manifests < <(find incoming -type f -name 'updater-*.json' | sort)
-          if [[ "${#manifests[@]}" -ne 4 ]]; then
-            echo "::error::Expected 4 updater manifest fragments, found ${#manifests[@]}. A release ships every target or none."
+          if [[ "${#manifests[@]}" -ne 5 ]]; then
+            echo "::error::Expected 5 updater manifest fragments, found ${#manifests[@]}. A release ships every target or none."
             exit 1
           fi
 
           mapfile -t evidence < <(find incoming -type f -name 'evidence-*.json' | sort)
-          if [[ "${#evidence[@]}" -ne 4 ]]; then
-            echo "::error::Expected 4 build-evidence records, found ${#evidence[@]}."
+          if [[ "${#evidence[@]}" -ne 5 ]]; then
+            echo "::error::Expected 5 build-evidence records, found ${#evidence[@]}."
             exit 1
           fi
           jq -e -s '
             (map(.platform) | sort) ==
-              ["darwin-aarch64", "darwin-x86_64", "linux-x86_64-appimage", "windows-x86_64"] and
+              ["darwin-aarch64", "darwin-x86_64", "linux-aarch64-appimage", "linux-x86_64-appimage", "windows-x86_64"] and
             all(.[]; (.signing | length) > 0 and (.files | length) >= 2)
           ' "${evidence[@]}" > /dev/null
           require_count() {
@@ -910,10 +930,10 @@ jobs:
           }
           require_count '*.dmg' 2
           require_count '*.exe' 1
-          require_count '*.AppImage' 1
-          require_count '*.deb' 1
+          require_count '*.AppImage' 2
+          require_count '*.deb' 2
           require_count '*.app.tar.gz' 2
-          require_count '*.sig' 4
+          require_count '*.sig' 5
           require_count '*.cdx.json' 2
           require_count 'install.sh' 1
           require_count 'install.ps1' 1
@@ -931,7 +951,7 @@ jobs:
 
           jq -e '
             (.platforms | keys | sort) ==
-              ["darwin-aarch64", "darwin-x86_64", "linux-x86_64-appimage", "windows-x86_64"]
+              ["darwin-aarch64", "darwin-x86_64", "linux-aarch64-appimage", "linux-x86_64-appimage", "windows-x86_64"]
           ' dist/latest.json > /dev/null
 
           # Every URL the manifest advertises must be immutable, point at this
@@ -1052,7 +1072,7 @@ jobs:
             echo
             echo "### Automated evidence"
             echo
-            echo "The workflow verified the exact main CI SHA, four updater platforms, immutable URLs, detached signatures, asset presence, checksums, and the signing mode reported by every build."
+            echo "The workflow verified the exact main CI SHA, five updater platforms, immutable URLs, detached signatures, asset presence, checksums, and the signing mode reported by every build."
             echo
             echo "| Platform | Target | Signing mode |"
             echo "| --- | --- | --- |"

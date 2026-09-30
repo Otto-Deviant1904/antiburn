@@ -36,7 +36,7 @@ repository cannot produce something that looks like a signed release.
 Create an environment named exactly **`release`** (Settings → Environments).
 Every signing credential lives here rather than in repository secrets, so the
 only jobs that can reach them are the ones that ask for the environment by name
-— in this repository, the four `build` jobs of `release-app.yml`.
+— in this repository, the five `build` jobs of `release-app.yml`.
 
 Configure it as:
 
@@ -245,7 +245,7 @@ changed only the `antiburn` package entry, and the changelog is the only other
 changed file. Any dependency or other content change falls back to the full
 platform matrix. Merge to `main`.
 
-The resulting main run compiles all four release targets with `tauri build
+The resulting main run compiles all five release targets with `tauri build
 --no-bundle`, in parallel with its required metadata and boundary checks. It has
 no release environment and no signing secret; its only durable output is a
 dependency cache that the tag build can restore. The cache is saved only by a
@@ -272,7 +272,8 @@ tag only after the commit is on `main`.
    matrix.
 3. **sbom** — CycloneDX inventories of the Rust tree (all targets) and of the
    frontend's production dependencies. No credentials are in scope for this job.
-4. **build** — four jobs (macOS ARM64, macOS x64, Windows x64, Linux x64), each
+4. **build** — five jobs (macOS ARM64, macOS x64, Windows x64, Linux x64,
+   Linux ARM64), each
    restoring the dependency cache prepared by main and then entering the
    `release` environment to package and sign. Each produces an installer, an
    updater bundle, a detached signature, and a fragment of `latest.json`. These
@@ -283,7 +284,7 @@ tag only after the commit is on `main`.
    extraction. It has no signing or repository-write credentials.
 6. **draft** — requires both helper archives, adds the root `install.sh` and `install.ps1`, then merges the
    fragments into `latest.json` with immutable
-   tag-specific URLs; verifies all four platform keys, asset presence, detached
+   tag-specific URLs; verifies all five platform keys, asset presence, detached
    signatures, reported signing modes, and `SHA256SUMS`; attests provenance over
    every asset; and creates the draft.
 
@@ -295,7 +296,7 @@ matrix followed by a cold compile. Any failure still leaves nothing published.
 
 The workflow summary contains the exact main CI run, the signing mode reported
 by each target, and the complete checksum table. Before the draft exists, the
-workflow has already required the four platform keys, immutable URLs, matching
+workflow has already required the five platform keys, immutable URLs, matching
 detached signatures, present assets, and a successful `sha256sum --check`.
 Those are machine gates, not boxes for a person to repeat.
 

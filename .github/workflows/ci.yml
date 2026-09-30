@@ -495,11 +495,16 @@ jobs:
           - name: Linux x64
             os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
+          - name: Linux ARM64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      # The ARM64 runner images use the ports mirrors, so the sed covers
+      # those forms as well; they match nothing on the x64 images.
       - name: Use Canonical Ubuntu package archive
         if: runner.os == 'Linux'
         run: |
@@ -507,6 +512,8 @@ jobs:
             -exec sed -i \
               -e 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
               -e 's|https://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+              -e 's|http://azure.ports.ubuntu.com/ubuntu-ports|http://ports.ubuntu.com/ubuntu-ports|g' \
+              -e 's|https://azure.ports.ubuntu.com/ubuntu-ports|http://ports.ubuntu.com/ubuntu-ports|g' \
               {} +
 
       - name: Install Tauri system dependencies
