@@ -66,6 +66,7 @@ import { Tooltip } from "../presentation/Tooltip"
 import { ProjectFolderActions } from "./ProjectFolderActions"
 import { TruncatedText } from "../presentation/TruncatedText"
 import { WslOriginBadge } from "../presentation/WslOriginBadge"
+import { CountPill } from "../ui/CountPill"
 import { SegmentedControl } from "../ui/SegmentedControl"
 import { Skeleton } from "../ui/Skeleton"
 import { ChartKey } from "./analysis/ChartKey"
@@ -731,6 +732,7 @@ export function SessionDetailPresentation({
     [],
   )
   const modelPairs = modelRunShortPairs(modelRuns)
+  const firstModel = modelPairs[0]
   const snoozes = useSnoozedBurnChecks()
   const snoozedDetectors = snoozedDetectorIds(snoozes.records)
   const hygieneChecks =
@@ -922,29 +924,6 @@ export function SessionDetailPresentation({
         </div>
       )}
 
-      <div className="flex min-w-0 items-center gap-1.5 type-caption text-label-tertiary">
-        {session.remoteHostId ? (
-          <>
-            <Monitor size={12} className="shrink-0" aria-hidden="true" />
-            <Tooltip label={session.remoteHostName ?? "Remote computer"}>
-              <span className="truncate">
-                Source {session.remoteHostName ?? "Remote computer"}
-              </span>
-            </Tooltip>
-            {session.remoteLastSuccessfulSyncEpoch != null ? (
-              <span className="shrink-0">
-                · Last synced{" "}
-                {relativeTime(
-                  new Date(session.remoteLastSuccessfulSyncEpoch * 1000).toISOString(),
-                )}
-              </span>
-            ) : null}
-          </>
-        ) : (
-          <span>Source Local</span>
-        )}
-      </div>
-
       <h2
         data-view-heading
         tabIndex={-1}
@@ -957,37 +936,83 @@ export function SessionDetailPresentation({
         />
       </h2>
 
-      {summary && (
-        <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 type-caption text-label-secondary">
-          <Tooltip label={`Active time (${formatDuration(summary.avgDurationSecs)} overall)`}>
-            <span className="tabular-nums">{formatDuration(summary.avgActiveSecs)} active</span>
-          </Tooltip>
-          {session.timestamp && (
-            <>
+      <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 type-caption text-label-secondary">
+        {summary && (
+          <>
+            <Tooltip label={`Active time (${formatDuration(summary.avgDurationSecs)} overall)`}>
+              <span className="tabular-nums">
+                {formatDuration(summary.avgActiveSecs)} active
+              </span>
+            </Tooltip>
+            {session.timestamp && (
+              <>
+                <span aria-hidden="true" className="text-label-tertiary">
+                  ·
+                </span>
+                <time dateTime={session.timestamp}>{relativeTime(session.timestamp)}</time>
+              </>
+            )}
+          </>
+        )}
+        {firstModel && (
+          <>
+            {summary && (
               <span aria-hidden="true" className="text-label-tertiary">
                 ·
               </span>
-              <time dateTime={session.timestamp}>{relativeTime(session.timestamp)}</time>
-            </>
-          )}
-          {modelPairs.length > 0 && (
-            <>
-              <span aria-hidden="true" className="text-label-tertiary">
-                ·
-              </span>
-              <span className="min-w-0 truncate" title={modelRunNames(modelRuns).join("\n")}>
-                {modelPairs.map((pair, index) => (
-                  <span key={`${pair.model}/${pair.thinkingMode ?? ""}`}>
-                    {index > 0 && " · "}
-                    <span>{pair.model}</span>
-                    {pair.thinkingMode && <span> {pair.thinkingMode}</span>}
+            )}
+            <Tooltip label={modelRunNames(modelRuns).join(" · ")}>
+              <span
+                role="group"
+                tabIndex={0}
+                aria-label={`Models: ${modelRunNames(modelRuns).join(", ")}`}
+                className="inline-flex min-w-0 items-baseline gap-x-1.5 text-label-tertiary"
+              >
+                <span className="min-w-0 truncate">
+                  <span className="font-semibold! text-label-secondary">
+                    {firstModel.model}
                   </span>
-                ))}
+                  {firstModel.thinkingMode && <span> {firstModel.thinkingMode}</span>}
+                </span>
+                {modelPairs.length > 1 && (
+                  <CountPill
+                    count={modelPairs.length - 1}
+                    prefix="+"
+                    data-additional-model-count=""
+                  />
+                )}
               </span>
+            </Tooltip>
+          </>
+        )}
+        <div className="flex min-w-0 items-baseline gap-1.5 type-caption text-label-tertiary">
+          {(summary || firstModel) && (
+            <span aria-hidden="true" className="text-label-tertiary">
+              ·
+            </span>
+          )}
+          {session.remoteHostId ? (
+            <>
+              <Monitor size={12} className="shrink-0 self-center" aria-hidden="true" />
+              <Tooltip label={session.remoteHostName ?? "Remote computer"}>
+                <span className="truncate">
+                  Source {session.remoteHostName ?? "Remote computer"}
+                </span>
+              </Tooltip>
+              {session.remoteLastSuccessfulSyncEpoch != null ? (
+                <span className="shrink-0">
+                  · Last synced{" "}
+                  {relativeTime(
+                    new Date(session.remoteLastSuccessfulSyncEpoch * 1000).toISOString(),
+                  )}
+                </span>
+              ) : null}
             </>
+          ) : (
+            <span>Source Local</span>
           )}
         </div>
-      )}
+      </div>
     </div>
   )
 
