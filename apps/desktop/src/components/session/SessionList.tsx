@@ -649,6 +649,14 @@ export function SessionRow({
                   </span>
                 )}
 
+                {additionalModelCount > 0 && (
+                  <CountPill
+                    count={additionalModelCount}
+                    prefix="+"
+                    data-additional-model-count=""
+                  />
+                )}
+
                 {remoteOrigin ? (
                   <Tooltip label={`Synced from ${remoteOrigin}`}>
                     <span
@@ -660,14 +668,6 @@ export function SessionRow({
                     </span>
                   </Tooltip>
                 ) : null}
-
-                {additionalModelCount > 0 && (
-                  <CountPill
-                    count={additionalModelCount}
-                    prefix="+"
-                    data-additional-model-count=""
-                  />
-                )}
               </div>
             </Tooltip>
           )}
