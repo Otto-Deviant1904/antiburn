@@ -194,20 +194,34 @@ release, and a draft can simply be deleted afterwards.
 
 ### 2.2 Bump every manifest, in one commit
 
-Four files state the version and all four must agree, or the tag is refused:
+Six files state the version and all six must agree, or the tag is refused:
 
 ```text
 apps/desktop/package.json                  "version"
 apps/desktop/src-tauri/tauri.conf.json     "version"
 apps/desktop/src-tauri/Cargo.toml          [package] version
 apps/desktop/src-tauri/Cargo.lock          the `antiburn` package entry
+crates/antiburn-remote/Cargo.toml          [package] version
+crates/antiburn-remote/Cargo.lock          the `antiburn-remote` package entry
 ```
 
-The lockfile is the one people forget. Refresh it after editing `Cargo.toml`:
+The remote helper is in the set because it ships as an asset of this release.
+Its archive name, its `--version` output and its `hello` response all come from
+its manifest, so a reader who holds a helper can name the release it came from.
+The helper bumps with the application even when its code does not change.
+
+The lockfiles are the ones people forget. Refresh them after editing the
+manifests. The desktop lockfile records both crates:
 
 ```bash
 cargo update --manifest-path apps/desktop/src-tauri/Cargo.toml --package antiburn
+cargo update --manifest-path apps/desktop/src-tauri/Cargo.toml --package antiburn-remote
+cargo update --manifest-path crates/antiburn-remote/Cargo.toml --package antiburn-remote
 ```
+
+If `cargo update` also moves unrelated entries in a lockfile, edit only the
+version line by hand instead. Do not pass `--offline`: it resolves from the
+local cache and moves unrelated entries.
 
 Check the whole set locally before pushing anything:
 
@@ -240,9 +254,9 @@ nobody acts on stay out.
 
 The version bump and the changelog entry go through the same review as anything
 else. A pure release bump gets the narrow release-metadata gate only when all
-three executable manifests changed **only** their package version, the lockfile
-changed only the `antiburn` package entry, and the changelog is the only other
-changed file. Any dependency or other content change falls back to the full
+four executable manifests changed **only** their package version, each lockfile
+changed only the package entries those manifests name, and the changelog is the
+only other changed file. Any dependency or other content change falls back to the full
 platform matrix. Merge to `main`.
 
 The resulting main run compiles all five release targets with `tauri build
@@ -304,7 +318,9 @@ The release includes `antiburn-remote-<version>-x86_64-unknown-linux-musl.tar.gz
 and `antiburn-remote-<version>-aarch64-unknown-linux-musl.tar.gz`. Both are covered
 by `SHA256SUMS`. Build provenance is included when the public-repository
 attestation steps run; private-repository releases skip those steps. Their archive version follows the application
-release; the helper's wire protocol version is a separate compatibility check.
+release, and §2.2 holds the helper's manifest to it, so `antiburn-remote --version`
+on an installed helper reports the release that shipped it. The helper's wire
+protocol version is a separate compatibility check.
 Follow [remote host setup](../remote-sessions.md) to exercise SSH discovery and
 offline cached analysis on a Linux host before publishing.
 
