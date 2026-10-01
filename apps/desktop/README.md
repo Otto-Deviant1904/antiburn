@@ -5,19 +5,28 @@ companion around the local [`antiburn-local`](../../crates/antiburn-local) engin
 
 The app discovers the coding-agent sessions already on this machine, analyzes
 them with the engine, and shows activity, per-session analysis, and
-API-equivalent cost estimates. Settings → Sources can also sync supported sessions
-from configured Linux SSH hosts into a private local cache; see
-[remote sessions](../../docs/remote-sessions.md). Analysis runs on this device, as you: antiburn
-needs no antiburn account, server, or backend of any kind, and nothing about
-your sessions is uploaded. It downloads public model prices from models.dev at
-startup and hourly while running; the request contains no session data or
-credentials. It also makes two calls to a service of ours, neither of which it
-depends on: the updater plugin, registered in release builds only, asking
-whether a newer version exists; and the anonymised analytics
-channel in [`src-tauri/src/analytics`](src-tauri/src/analytics),
-which reports the documented product events in official release builds. The Ready
-screen explains it, and Settings → Privacy provides the opt-out. The analytics
-client is excluded from default source and development builds.
+API-equivalent cost estimates. Settings → Sources can also sync supported
+sessions from configured Linux SSH hosts into a private local cache; see
+[remote sessions](../../docs/remote-sessions.md). The session index stays on
+the device and needs no antiburn account, server, or backend. Jev-powered Burn
+Checks currently include Ignored Instructions. When enabled with your
+TypeSafe API key in Settings → Checks, that check sends selected instruction
+text, assistant text excerpts, Bash command input, file-edit paths, read-file
+paths, search queries with scope filters, and other-tool input to TypeSafe. It
+excludes user messages,
+edit contents, read/search/command output, and other tool results. Bash command
+input can contain inline scripts, heredocs, and patches recorded inside the
+command; dedicated edit-tool content stays excluded. Selected paths can leave
+the device in TypeSafe requests. Usage charges can apply. The app downloads public model prices from
+models.dev at startup and hourly while running; the request contains no session
+data or credentials. It also makes two calls to a service of ours, neither of
+which it depends on: the updater plugin, registered in release builds only,
+asking whether a newer version exists; and the anonymised analytics
+channel in [`src-tauri/src/analytics`](src-tauri/src/analytics), which reports
+closed product events without session or instruction content in official
+release builds. The Ready screen explains it, and Settings → Privacy provides
+the opt-out. The analytics client is excluded from default source and
+development builds.
 
 ## Layout
 
@@ -131,6 +140,18 @@ The Tauri content security policy limits renderer connections to the local app
 and IPC. The Rust analytics module tests consent, endpoint injection, and the
 payload schema. `cargo-deny` rejects known telemetry dependencies in the local
 engine. Release and dependency checks run through the required CI gate.
+
+Ignored Instructions uses a separate TypeSafe request, not the analytics
+channel. Its assessment compares selected session evidence with supported
+instruction files as they exist now. That current-file comparison does not
+establish historical file contents or activation. A read path alone does not
+provide historical instruction text. Missing historical evidence remains
+unavailable, and an incomplete source cannot prove the absence of a conflict.
+The source and finding limits are in
+[`session-coverage.md`](../../docs/session-coverage.md) and
+[`check-coverage.md`](../../docs/check-coverage.md). The
+[Smart Burn Checks guide](../../docs/smart-burn-checks.md) explains how the
+check divides and assesses session data.
 
 Burn Check remediation stays local. After a separate review and confirmation,
 each Auto Fix changes one winning control. It uses the global or user control

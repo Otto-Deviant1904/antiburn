@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Ignored Instructions evaluation memory budgets",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "selected_page_bytes",
+    "serialized_request_bytes",
+    "transient_live_heap_bytes",
+    "retained_after_teardown_bytes",
+    "serialized_result_bytes"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "scope": { "type": "string", "minLength": 1 },
+    "basis": { "type": "string", "minLength": 1 },
+    "selected_page_bytes": { "const": 1179648 },
+    "serialized_request_bytes": { "const": 61440 },
+    "transient_live_heap_bytes": { "const": 33554432 },
+    "retained_after_teardown_bytes": { "const": 0 },
+    "serialized_result_bytes": { "const": 262144 },
+    "unmeasured": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+  },
+  "additionalProperties": false
+}

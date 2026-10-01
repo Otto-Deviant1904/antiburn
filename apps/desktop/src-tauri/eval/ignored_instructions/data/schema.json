@@ -1,0 +1,184 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://antiburn.dev/schemas/ignored-instructions-evaluation.json",
+  "title": "Ignored Instructions evaluation data",
+  "type": "object",
+  "oneOf": [{ "$ref": "#/$defs/case_file" }, { "$ref": "#/$defs/binding_file" }],
+  "definitions": {
+    "case": {
+      "type": "object",
+      "required": ["id", "expected", "source_format", "instruction", "events", "cohorts"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "expected": { "enum": ["finding", "no_finding", "pending", "unassessed"] },
+        "source_format": {
+          "enum": [
+            "ClaudeJsonl",
+            "CodexRolloutJsonl",
+            "OpenCodeSqliteV2",
+            "PiV3Jsonl",
+            "CursorCliAgentJsonl",
+            "AntigravityBrainJsonl"
+          ]
+        },
+        "instruction": { "type": "string" },
+        "events": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "prefixItems": [{ "type": "string" }, { "type": "string" }],
+            "minItems": 2,
+            "maxItems": 2
+          }
+        },
+        "cohorts": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "citation_bindings": { "type": "array" },
+        "semantic_references": { "type": "array" },
+        "citations": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^e[0-9]+$" }
+        },
+        "label_review": { "type": ["string", "null"] },
+        "contract_reason": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "case_file": {
+      "type": "object",
+      "required": ["schema_version", "cases"],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "cases": { "type": "array", "items": { "$ref": "#/$defs/case" } }
+      },
+      "additionalProperties": false
+    },
+    "binding_file": {
+      "type": "object",
+      "required": ["schema_version", "cases"],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "cases": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "input_sha256",
+              "semantic_references",
+              "bindings",
+              "resolution",
+              "revisions"
+            ],
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "input_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+              "semantic_references": { "type": "array" },
+              "bindings": {
+                "type": "array",
+                "items": { "type": "string", "pattern": "^[a-f0-9]{64}/[^/]+$" },
+                "uniqueItems": true
+              },
+              "binding_records": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "source",
+                    "start_line",
+                    "end_line",
+                    "action_reference_id",
+                    "rule_id",
+                    "action_id"
+                  ],
+                  "properties": {
+                    "source": { "type": "string" },
+                    "start_line": { "type": "integer", "minimum": 1 },
+                    "end_line": { "type": "integer", "minimum": 1 },
+                    "action_reference_id": { "type": "string" },
+                    "rule_id": { "type": "string" },
+                    "action_id": { "type": "string" }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "unresolved_references": { "type": "array", "items": { "type": "object" } },
+              "resolution_audit": {
+                "type": "object",
+                "required": [
+                  "page_count",
+                  "candidate_pairs",
+                  "selected_comparisons",
+                  "unique_comparison_ids",
+                  "comparison_id_order_sha256",
+                  "pages",
+                  "exhaustive"
+                ],
+                "properties": {
+                  "page_count": { "type": "integer", "minimum": 0 },
+                  "candidate_pairs": { "type": ["integer", "null"], "minimum": 0 },
+                  "selected_comparisons": { "type": "integer", "minimum": 0 },
+                  "unique_comparison_ids": { "type": "integer", "minimum": 0 },
+                  "comparison_id_order_sha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "pages": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": ["after", "next", "selected_comparisons"],
+                      "properties": {
+                        "after": { "type": ["string", "null"] },
+                        "next": { "type": ["string", "null"] },
+                        "selected_comparisons": { "type": "integer", "minimum": 0 }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "exhaustive": { "type": "boolean" }
+                },
+                "additionalProperties": false
+              },
+              "resolution": { "enum": ["pending", "resolved", "not_required"] },
+              "revisions": { "type": ["string", "null"] }
+            },
+            "allOf": [
+              {
+                "if": { "properties": { "resolution": { "const": "resolved" } } },
+                "then": {
+                  "required": ["binding_records", "resolution_audit"],
+                  "properties": {
+                    "bindings": { "minItems": 1 },
+                    "revisions": { "type": "string", "minLength": 1 }
+                  }
+                }
+              },
+              {
+                "if": { "properties": { "resolution": { "const": "not_required" } } },
+                "then": {
+                  "properties": {
+                    "bindings": { "maxItems": 0 },
+                    "revisions": { "type": "null" }
+                  }
+                }
+              }
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "case": { "$ref": "#/definitions/case" },
+    "case_file": { "$ref": "#/definitions/case_file" },
+    "binding_file": { "$ref": "#/definitions/binding_file" }
+  }
+}

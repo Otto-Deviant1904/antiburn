@@ -32,6 +32,7 @@ permissions = [
   "allow-get-session-hygiene",
   "allow-get-session-limit-allocations",
   "allow-get-settings",
+  "allow-get-check-availability",
   "allow-get-storage-health",
   "allow-get-subagent-analysis",
   "allow-get-update-status",

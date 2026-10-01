@@ -1,17 +1,55 @@
 # Privacy policy
 
-Effective: 21 September 2026
+Effective: 24 September 2026
 
-This policy explains the analytics sent by the antiburn desktop application.
+This policy explains first-party analytics and the optional TypeSafe assessment
+requests sent by the antiburn desktop application.
 Antiburn is operated by **Cadence AI (Vic) Pty Ltd** ("we", "us"). Contact us
 at [support@teamcadence.ai](mailto:support@teamcadence.ai).
 
 ## What stays on your computer
 
-Antiburn reads coding-agent session files already on your computer and analyzes
-them locally. It does not upload your sessions, transcripts, prompts, messages,
-titles, source code, file contents, filenames, paths, repository or branch
-names, working directories, token counts, costs, or credentials.
+Antiburn reads coding-agent session files already on your computer and stores
+its session index locally. Ordinary session analysis does not upload sessions,
+transcripts, prompts, messages, titles, source code, filenames, paths,
+repository or branch names, working directories, token counts, or costs.
+
+If you enable Smart Burn Checks with your TypeSafe API key, the current
+check, Ignored Instructions, sends selected instruction text, assistant text
+excerpts, Bash command input, file-edit paths, read-file paths, search queries
+with scope filters, and other-tool inputs to TypeSafe to assess whether
+instructions were followed. Bash input is the recorded command request, so
+inline scripts, heredocs, and patches included in that command can be sent too.
+Dedicated edit-tool content is excluded. The check excludes user messages, read
+output, search output, command output, and all other tool-result text. Current
+global and project instruction snapshots are comparison inputs, not proof of
+what was active during an older session. Selected paths stay on your computer
+during local analysis, but can leave it in TypeSafe requests. Assistant text,
+commands, and other-tool inputs can contain private work content, source code,
+and credentials.
+TypeSafe processes the request under
+its own terms, and usage charges can apply. The key is used to authenticate
+those requests; it is not part of Antiburn analytics. New activity is checked after three minutes of
+inactivity. Pausing Smart Burn Checks keeps the saved key but stops new checks;
+removing the key is a separate action. In Settings → Checks, you can choose future sessions only, the last
+7 days, or the last 30 days, then start a check for that period. Historical
+checks send the same selected instruction text and session fields and can
+incur TypeSafe usage charges. Remove the key in Settings → Checks to stop new
+assessments. Past requests cannot be withdrawn from TypeSafe.
+
+The worker compares supported instruction files as they exist now. A matching
+current path does not prove that the file had the same text, or was active, when
+the session action occurred. Historical instruction text remains unavailable
+unless a supported authoritative session record contains it; a read-file path
+alone is not that record. Missing historical evidence remains unavailable and
+cannot support a clean result.
+
+Antiburn keeps bounded local totals for confirmed TypeSafe token usage, calls,
+cache reuse, and unknown request outcomes. The totals include the model and price
+version used to estimate cost. They do not include session identifiers, request
+text, response text, credentials, or paths. The estimated cost is not a provider
+invoice. Deleting one session does not change these totals because the usage has
+already occurred. Clear Local Data removes the totals and rolling usage records.
 
 If you confirm an Auto Fix, Antiburn can change one existing supported coding
 agent setting on your computer. It shows the setting, scope, current value, and
@@ -30,7 +68,7 @@ host names, remote paths, and connection diagnostics are not analytics data.
 
 ## Analytics we collect
 
-Official release builds send limited events about how the application works,
+Official release builds send limited first-party events about how the application works,
 which features are used, and coarse hourly ranges for the application's own
 resource use. This includes application launch and progress through the fixed
 onboarding steps.
@@ -79,6 +117,12 @@ I/O transfer bytes, not physical disk traffic. An unavailable measurement is not
 reported as zero, and the highest memory band is a sampled maximum rather than a
 true peak.
 
+For Ignored Instructions, first-party analytics can report a visible finding,
+whether evidence was available, and whether a fix prompt was copied. These
+events contain fixed status words only. They contain no instruction text,
+session excerpt, finding details, prompt, API key, path, or session identifier.
+The separate TypeSafe assessment request is not a first-party analytics event.
+
 The installation identifier is random and changes every 30 days. The live
 analytics-session identifier is generated in memory and changes when the app
 restarts, when the installation identifier rotates, or after 30 minutes without
@@ -92,7 +136,7 @@ address.
 The complete field list, event catalog, and verification steps are in
 [Anonymised analytics](analytics.md).
 
-## Network information
+## First-party analytics network information
 
 The analytics endpoint also stores the IP address and user-agent attached to
 the request. These values can reveal your approximate location, network, device
@@ -101,10 +145,10 @@ type, and app runtime. We store them with the raw event.
 ## Why we use analytics
 
 We use these events to understand whether onboarding works, which product
-features are useful, which operations fail, when Claude makes its session
-limit-reset feature available, and whether antiburn has resource regressions.
-We do not use them for
-advertising, user profiling, or decisions about a person.
+features are useful, which operations fail, whether Ignored Instructions
+findings and prompts are used, when Claude makes its session-limit reset
+available, and whether antiburn has resource regressions. We do not use them
+for advertising, user profiling, or decisions about a person.
 
 We process this data for our legitimate interest in maintaining and improving
 Antiburn. You can object at any time by turning analytics off.

@@ -1194,24 +1194,31 @@ fn a_truncated_assessment_cannot_prove_a_fix() {
 }
 
 #[test]
-fn category_lifecycle_awaits_evidence_then_uses_current_findings() {
+fn category_lifecycle_keeps_pending_evidence_ahead_of_retained_findings() {
     assert_eq!(
-        resolve_category_lifecycle(1, 0, true),
+        resolve_category_lifecycle(DetectorId::ModelOverthinking, 1, 0, true),
         Some(crate::dto::ChecksCategoryLifecyclePayload::AwaitingVerification)
     );
     assert_eq!(
-        resolve_category_lifecycle(0, 1, true),
+        resolve_category_lifecycle(DetectorId::ModelOverthinking, 0, 1, true),
         Some(crate::dto::ChecksCategoryLifecyclePayload::AwaitingVerification)
     );
     assert_eq!(
-        resolve_category_lifecycle(1, 0, false),
+        resolve_category_lifecycle(DetectorId::IgnoredInstructions, 1, 0, true),
         Some(crate::dto::ChecksCategoryLifecyclePayload::Failing)
     );
     assert_eq!(
-        resolve_category_lifecycle(0, 1, false),
+        resolve_category_lifecycle(DetectorId::ModelOverthinking, 1, 0, false),
+        Some(crate::dto::ChecksCategoryLifecyclePayload::Failing)
+    );
+    assert_eq!(
+        resolve_category_lifecycle(DetectorId::ModelOverthinking, 0, 1, false),
         Some(crate::dto::ChecksCategoryLifecyclePayload::Passing)
     );
-    assert_eq!(resolve_category_lifecycle(0, 0, false), None);
+    assert_eq!(
+        resolve_category_lifecycle(DetectorId::ModelOverthinking, 0, 0, false),
+        None
+    );
 }
 
 #[test]
@@ -1231,6 +1238,57 @@ fn an_observed_resource_subset_cannot_prove_an_absent_target_fixed() {
         }],
     );
     assert!(matches!(result.outcome, VerificationOutcome::Unknown(_)));
+}
+
+#[test]
+fn instruction_evidence_excerpts_are_bounded_without_splitting_utf8() {
+    let text = "界".repeat(2_000);
+    let excerpt = bounded_evidence_excerpt(&text);
+    assert!(excerpt.len() <= 4096);
+    assert!(excerpt.is_char_boundary(excerpt.len()));
+    assert_eq!(excerpt, "界".repeat(1365));
+    assert_eq!(
+        unavailable_instruction_evidence().status,
+        BurnCheckEvidenceStatus::Unavailable
+    );
+}
+
+#[test]
+fn a_missing_optional_context_keeps_the_required_action_available() {
+    let context = BTreeSet::from(["optional-context"]);
+    let available = BTreeSet::from(["required-action".to_owned()]);
+    assert_eq!(
+        available_evidence_references("required-action", &context, &available),
+        Some((vec!["required-action".to_owned()], true))
+    );
+    assert_eq!(
+        available_evidence_references("missing-action", &context, &available),
+        None
+    );
+}
+
+#[test]
+fn project_instruction_root_uses_the_nested_session_worktree() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let worktree = temporary.path().join("feature-worktree");
+    std::fs::create_dir_all(worktree.join("packages/app/src")).expect("nested project path");
+    let initialized = std::process::Command::new("git")
+        .args(["-c", "init.defaultBranch=main", "init"])
+        .current_dir(&worktree)
+        .status()
+        .expect("run git init");
+    assert!(initialized.success());
+
+    let root = project_worktree_root(&worktree.join("packages/app/src"))
+        .expect("resolve nested worktree root");
+    assert_eq!(root, std::fs::canonicalize(worktree).unwrap());
+}
+
+#[test]
+fn only_checks_with_supported_verification_create_prompt_watches() {
+    assert!(!prompt_watch_supported([] as [DetectorId; 0]));
+    assert!(!prompt_watch_supported([DetectorId::IgnoredInstructions]));
+    assert!(prompt_watch_supported([DetectorId::OldModelUsage]));
 }
 
 #[test]
@@ -1621,6 +1679,7 @@ fn aggregate_wins_decode_only_typed_safe_documents() {
     let display = BurnCheckDisplayFacts {
         resource_kind: BurnCheckResourceKind::Model,
         resource_identity: Some("old-model".into()),
+        instruction_title: None,
         current_value: Some("old-model".into()),
         replacement_value: Some("new-model".into()),
         scope_kind: BurnCheckScopeKind::Project,

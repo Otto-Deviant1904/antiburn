@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "frozen_at": "2026-09-30 before new live held-out execution",
+  "model": "jev-1.13.0",
+  "baseline": "jev-phase-0-baseline: live8 outcomes 8/8, citations 7/8; no rich semantic measurement",
+  "policy": "Do not tune on held-out labels. Missing cases fail completeness. Zero denominators are null, not perfect scores. Parser and lifecycle tests are not model-quality measurements.",
+  "gates": {
+    "must_catch_recall": 1.0,
+    "candidate_recall": 1.0,
+    "citation_accuracy": 1.0,
+    "false_clean_count": 0,
+    "excluded_field_leak_count": 0,
+    "precision": 0.95,
+    "observable_recall": 0.95,
+    "family_outcome_accuracy": 0.9,
+    "source_outcome_accuracy": 0.9
+  },
+  "threshold_policy": {
+    "screening": 0.85,
+    "possible_publication": 0.85,
+    "likely_publication": 0.9,
+    "calibration": "Keep production Choice thresholds fixed for held-out evaluation. Evaluate 0.80/0.85/0.90/0.95 only on measured development responses. Do not reinterpret Choice probabilities as Noul values."
+  },
+  "live_budget": {
+    "requests": 10000,
+    "reserved_input_tokens": 100000000,
+    "reserved_output_tokens": 670000000,
+    "cost_usd": 8.0,
+    "input_usd_per_million": 0.042,
+    "price_source": "production typesafe-model-catalog-2026-09-25 input-only estimate",
+    "reservation": "Reserve serialized request bytes as conservative input tokens and MAX_RESPONSE_BYTES as output tokens before dispatch. Never release reservations on failure. No automatic retries."
+  }
+}

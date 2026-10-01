@@ -520,6 +520,22 @@ describe("BurnChecksView grouping", { timeout: 15_000 }, () => {
     expect(screen.queryByText(/Verification requires fresh evidence/)).not.toBeInTheDocument()
   })
 
+  it("shows not-assessed checks at the same level as assessed groups", async () => {
+    setup(null, false, aggregate, {
+      ...report,
+      categories: [
+        { ...report.categories[2]!, id: "ignoredInstructions" },
+        report.categories[0]!,
+      ],
+    })
+
+    const notAssessed = await screen.findByRole("button", { name: /Ignored Instructions/ })
+    const list = notAssessed.parentElement
+    const assessedGroup = list?.nextElementSibling
+    expect(list).toHaveClass("burn-checks-unassessed")
+    expect(assessedGroup).toHaveClass("burn-checks-group")
+  })
+
   it("groups wide check rows and exposes the selected outcome state", async () => {
     setWindowWidth(1400)
     setup()

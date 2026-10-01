@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Ignored Instructions evaluation gates",
+  "type": "object",
+  "required": ["schema_version", "gates", "minimum_counts", "threshold_policy"],
+  "properties": {
+    "schema_version": { "const": 2 },
+    "gates": {
+      "type": "object",
+      "required": [
+        "joint_case_accuracy",
+        "observable_binding_recall",
+        "binding_precision",
+        "completion"
+      ],
+      "properties": {
+        "joint_case_accuracy": { "const": 0.8 },
+        "observable_binding_recall": { "const": 0.8 },
+        "binding_precision": { "const": 0.8 },
+        "completion": { "const": 1.0 }
+      },
+      "additionalProperties": false
+    },
+    "minimum_counts": {
+      "type": "object",
+      "required": ["159_cases_joint_passes", "48_cases_joint_passes"],
+      "properties": {
+        "159_cases_joint_passes": { "const": 128 },
+        "48_cases_joint_passes": { "const": 39 }
+      },
+      "additionalProperties": false
+    },
+    "threshold_policy": {
+      "type": "object",
+      "required": ["possible_publication", "likely_publication"],
+      "properties": {
+        "possible_publication": { "const": 0.85 },
+        "likely_publication": { "const": 0.9 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

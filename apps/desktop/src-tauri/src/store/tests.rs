@@ -11,8 +11,11 @@ use super::model::{
 use super::*;
 
 mod activity_tests;
+mod burn_check_tests;
 mod coverage_tests;
 mod evidence_tests;
+#[path = "tests/history_tests.rs"]
+mod history_tests;
 mod reader_tests;
 mod reconcile_tests;
 mod remediation_tests;
@@ -43,6 +46,22 @@ fn session(session_id: &str, updated_at: i64) -> SessionRecord {
         fork_parent_session_id: None,
         source_fingerprint: None,
     }
+}
+
+fn add_session_content(store: &Store, record: &SessionRecord) {
+    let mut row = turn_row(0);
+    row.source_key = record.key.session_id.clone();
+    row.thread_id = row.source_key.clone();
+    row.content = vec![antiburn_local::analysis::ContentPart::new(
+        antiburn_local::analysis::ContentKind::AssistantText,
+        "synthetic session action",
+    )];
+    let key = antiburn_local::analysis::TurnSessionKey {
+        environment_key: &record.key.environment_key,
+        agent: &record.key.agent,
+        session_id: &record.key.session_id,
+    };
+    insert_turn_rows(&store.lock(), &key, 1, &[row]).unwrap();
 }
 
 fn seed_historical_sessions(store: &Store, count: usize) {
@@ -154,7 +173,6 @@ fn scan_history_queries_cross_the_key_batch_boundary() {
     store
         .upsert_sessions(&records, &crate::agents::evidence_cohort())
         .unwrap();
-
     let activity_keys = records
         .iter()
         .map(|record| {
@@ -1911,6 +1929,174 @@ fn deleting_a_session_takes_its_derived_records_with_it() {
     assert!(store.analysis(&key).unwrap().is_none());
     assert!(store.relations(&key).unwrap().is_empty());
     assert!(store.delete_session(&key).unwrap().is_none());
+}
+
+#[test]
+fn selected_history_keeps_candidates_pending_until_evidence_is_ready() {
+    let store = store();
+    let now = 1_000_000;
+    let start = now - 7 * 24 * 60 * 60;
+    store
+        .upsert_sessions(
+            &[
+                session("boundary", start),
+                session("recent", now - 1),
+                session("old", start - 1),
+            ],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    add_session_content(&store, &session("boundary", start));
+    add_session_content(&store, &session("recent", now - 1));
+    store
+        .capture_burn_check_boundaries(&["ignored_instructions"], now - 10)
+        .unwrap();
+    assert_eq!(store.enqueue_burn_checks(now, 7).unwrap(), 2);
+    assert_eq!(
+        store
+            .historical_burn_check_status(now, 180)
+            .unwrap()
+            .waiting_for_data,
+        2
+    );
+    assert_eq!(store.enqueue_burn_checks(now, 7).unwrap(), 0);
+    assert_eq!(
+        store
+            .historical_burn_check_status(now, 180)
+            .unwrap()
+            .waiting_for_data,
+        2
+    );
+    assert_eq!(
+        store
+            .burn_check_assessment(
+                &SessionKey::new("native", "claude-code", "old"),
+                "ignored_instructions"
+            )
+            .unwrap()
+            .unwrap()
+            .status,
+        "idle"
+    );
+}
+
+#[test]
+fn selected_history_reaches_candidates_after_the_first_worker_page() {
+    let store = store();
+    let now = 1_000_000;
+    let records = (0..33)
+        .map(|index| session(&format!("recent-{index:02}"), now - 200))
+        .collect::<Vec<_>>();
+    store
+        .upsert_sessions(&records, &crate::agents::evidence_cohort())
+        .unwrap();
+    for record in &records {
+        add_session_content(&store, record);
+    }
+    {
+        let connection = store.lock();
+        connection
+            .execute(
+                "UPDATE session_evidence SET status = 'ready',
+                 analyzed_generation = (SELECT s.source_generation FROM session s
+                    WHERE s.environment_key = session_evidence.environment_key
+                      AND s.agent = session_evidence.agent
+                      AND s.session_id = session_evidence.session_id),
+                 parser_revision = ?1, evidence_schema_revision = ?2,
+                 published_fence = 1",
+                rusqlite::params![
+                    antiburn_local::analysis::PARSER_REVISION,
+                    antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION
+                ],
+            )
+            .unwrap();
+    }
+    store
+        .capture_burn_check_boundaries(&["ignored_instructions"], now - 300)
+        .unwrap();
+    assert_eq!(store.enqueue_burn_checks(now, 7).unwrap(), 33);
+    let first = store
+        .burn_check_candidates("ignored_instructions", now, 180, 16)
+        .unwrap();
+    assert_eq!(first.len(), 16);
+    for candidate in &first {
+        store.skip_historical_burn_check(candidate).unwrap();
+    }
+    let second = store
+        .burn_check_candidates("ignored_instructions", now, 180, 16)
+        .unwrap();
+    assert_eq!(second.len(), 16);
+    assert!(second.iter().all(|candidate| {
+        !first
+            .iter()
+            .any(|earlier| earlier.session.key == candidate.session.key)
+    }));
+    let selected = &second[0];
+    {
+        let connection = store.lock();
+        connection
+            .execute(
+                "UPDATE burn_check_assessment SET status = 'completed',
+                 boundary_activity_cursor = ?1, updated_at_epoch = ?2
+              WHERE environment_key = ?3 AND agent = ?4 AND session_id = ?5",
+                rusqlite::params![
+                    selected.activity_cursor,
+                    now,
+                    selected.session.key.environment_key,
+                    selected.session.key.agent,
+                    selected.session.key.session_id
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE session SET updated_at_epoch = ?1, activity_cursor = 'later-activity'
+              WHERE environment_key = ?2 AND agent = ?3 AND session_id = ?4",
+                rusqlite::params![
+                    now + 10,
+                    selected.session.key.environment_key,
+                    selected.session.key.agent,
+                    selected.session.key.session_id
+                ],
+            )
+            .unwrap();
+    }
+    let later = store
+        .burn_check_candidates("ignored_instructions", now + 200, 180, 33)
+        .unwrap();
+    assert!(
+        later
+            .iter()
+            .any(|candidate| candidate.session.key == selected.session.key
+                && candidate.boundary_at_epoch == now)
+    );
+}
+
+#[test]
+fn selected_history_queues_every_page_without_repeating_the_first() {
+    let store = store();
+    let now = 1_000_000;
+    let records = (0..513)
+        .map(|index| session(&format!("recent-{index:03}"), now - 200))
+        .collect::<Vec<_>>();
+    store
+        .upsert_sessions(&records, &crate::agents::evidence_cohort())
+        .unwrap();
+    for record in &records {
+        add_session_content(&store, record);
+    }
+    store
+        .capture_burn_check_boundaries(&["ignored_instructions"], now)
+        .unwrap();
+    assert_eq!(store.enqueue_burn_checks(now, 7).unwrap(), 513);
+    assert_eq!(
+        store
+            .historical_burn_check_status(now, 180)
+            .unwrap()
+            .waiting_for_data,
+        513
+    );
+    assert_eq!(store.enqueue_burn_checks(now, 7).unwrap(), 0);
 }
 
 #[test]
