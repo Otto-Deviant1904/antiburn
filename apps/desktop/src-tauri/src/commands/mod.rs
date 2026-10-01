@@ -1271,6 +1271,22 @@ pub async fn scan_now(
     .await)
 }
 
+/// Run the dedicated historical pass now: Settings › General › Historical
+/// scan. Widens discovery past the current window, up to the retention
+/// limit — see `scan::history::window_secs`. Unlike [`scan_now`], a request
+/// dropped because a pass is already running is queued rather than lost,
+/// since no later routine pass would cover the same ground.
+#[tauri::command]
+pub async fn scan_history(app: tauri::AppHandle) -> CommandResult<ScanStatus> {
+    Ok(scan::run_pass(
+        &app,
+        None,
+        ScanTrigger::HistoricalScan,
+        scan::PassScope::Full,
+    )
+    .await)
+}
+
 /// Ask the scan in flight to stop at its next phase boundary.
 ///
 /// Everything it already persisted stays: a cancelled pass is a shorter pass,
@@ -2469,6 +2485,9 @@ pub async fn clear_local_index(app: tauri::AppHandle) -> CommandResult<usize> {
         .map_err(fail)
     })
     .await?;
+    // A fresh index has not earned its historical pass yet, even under a
+    // retention that already covered the one this just dropped.
+    crate::scan::history::reset_done(&app.state::<Store>());
     // Report the broad removal and list invalidation before requesting index refill.
     crate::session_lifecycle::report(
         &app,

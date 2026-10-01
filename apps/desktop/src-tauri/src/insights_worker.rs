@@ -300,6 +300,10 @@ async fn run_worker(app: tauri::AppHandle) {
             source = "insights_worker_batch"
         );
         let _ = report_app.emit(commands::CHECKS_REPORT_CHANGED_EVENT, ());
+        // Catches up the history progress indicator while the worker
+        // settles history evidence after the historical pass itself has
+        // already finished — `push_progress` throttles its own event.
+        crate::scan::history::push_progress(&report_app, false);
     };
     let backlog_app = app.clone();
     let announce_backlog = move |active: bool| {
@@ -307,6 +311,12 @@ async fn run_worker(app: tauri::AppHandle) {
             commands::INSIGHTS_BACKLOG_CHANGED_EVENT,
             crate::dto::InsightsBacklog { active },
         );
+        // The automatic historical pass's other prerequisite (see
+        // `scan::history::maybe_start_automatic_pass`) is the backlog
+        // draining; check it on every drain, not only after a scan pass.
+        if !active {
+            crate::scan::history::maybe_start_automatic_pass(&backlog_app);
+        }
     };
     let analytics_app = app.clone();
     let report_ingested = move |agent: AgentKind, ingested: IngestedIncidents| {

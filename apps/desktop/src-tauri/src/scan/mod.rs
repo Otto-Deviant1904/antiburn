@@ -111,6 +111,7 @@ use crate::session_lifecycle::{self, AnonymousCover, AnonymousGen};
 use crate::storage_health::{self, checked};
 use crate::store::{SessionActivityKey, SessionKey, SessionRecord, Store};
 
+pub mod history;
 pub mod live_poll;
 pub mod scoped;
 pub mod watch;
@@ -166,8 +167,14 @@ pub enum ScanTrigger {
     FolderAccessGranted,
     /// The local index was cleared.
     IndexCleared,
-    /// The reader asked for a rescan explicitly.
+    /// The reader asked for a rescan explicitly. Stays current-window only —
+    /// see [`Self::HistoricalScan`] for the trigger that widens.
     ManualRescan,
+    /// The reader asked for the dedicated historical pass (Settings ›
+    /// General › Historical scan), or the scheduler started the one-time
+    /// automatic pass for the current retention. Widens discovery past the
+    /// current window — see `history::window_secs`.
+    HistoricalScan,
 }
 
 impl ScanTrigger {
@@ -184,6 +191,7 @@ impl ScanTrigger {
             ScanTrigger::FolderAccessGranted => "folder_access_granted",
             ScanTrigger::IndexCleared => "index_cleared",
             ScanTrigger::ManualRescan => "manual_rescan",
+            ScanTrigger::HistoricalScan => "historical_scan",
         }
     }
 
@@ -209,7 +217,8 @@ impl ScanTrigger {
             | ScanTrigger::ScanRootAdded
             | ScanTrigger::FolderAccessGranted
             | ScanTrigger::IndexCleared
-            | ScanTrigger::ManualRescan => true,
+            | ScanTrigger::ManualRescan
+            | ScanTrigger::HistoricalScan => true,
         }
     }
 }
@@ -317,6 +326,14 @@ pub struct ScanController {
     /// The one watcher burst waiting for the scheduler loop. New bursts merge
     /// into its fixed path budgets while a pass is running.
     pending_burst: Mutex<Option<watch::WatchBurst>>,
+    /// Set once the first current-window pass finishes. The automatic
+    /// historical pass (`history::maybe_start_automatic_pass`) checks this
+    /// before it asks for anything, so it never races a fresh install's
+    /// first pass.
+    first_current_pass_done: AtomicBool,
+    /// When [`history::push_progress`] last emitted its event, for the
+    /// roughly-one-per-second throttle.
+    history_last_emit: Mutex<Option<Instant>>,
 }
 
 impl ScanController {
@@ -331,10 +348,11 @@ impl ScanController {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         match pending.as_ref() {
-            // A manual rescan is the only trigger that widens discovery, so a
-            // pending automatic trigger yields to it. Coalescing the other way
-            // would drop the only pass that covers the whole index.
-            Some(existing) if matches!(trigger, ScanTrigger::ManualRescan) => {
+            // The historical pass is the only trigger that widens discovery
+            // past the current window, so a pending automatic trigger
+            // yields to it. Coalescing the other way would drop the only
+            // pass that covers the retained history.
+            Some(existing) if matches!(trigger, ScanTrigger::HistoricalScan) => {
                 ::tracing::debug!(
                     event = "scan_request_coalesced",
                     kept = trigger.label(),
@@ -420,6 +438,34 @@ impl ScanController {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         mutate(&mut status);
         status.clone()
+    }
+
+    /// Whether the first current-window pass has finished since launch.
+    pub(crate) fn first_current_pass_done(&self) -> bool {
+        self.first_current_pass_done.load(Ordering::SeqCst)
+    }
+
+    /// Records that a current-window pass finished. Idempotent: a later
+    /// pass's finish leaves this set.
+    pub(crate) fn mark_current_pass_done(&self) {
+        self.first_current_pass_done.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether [`history::push_progress`] may emit now, under the
+    /// roughly-one-per-second throttle. Advances the throttle's clock only
+    /// when it answers yes.
+    pub(crate) fn throttle_history_emit(&self) -> bool {
+        let mut last_emit = self
+            .history_last_emit
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let now = Instant::now();
+        let due =
+            last_emit.is_none_or(|previous| now.duration_since(previous) >= Duration::from_secs(1));
+        if due {
+            *last_emit = Some(now);
+        }
+        due
     }
 }
 
@@ -769,12 +815,12 @@ pub(crate) async fn try_run_pass(
             // of drops instead.
             ::tracing::debug!(event = "scan_request_dropped", trigger = trigger.label());
             // A dropped automatic request is fine, because the scheduler runs
-            // a pass on its own tick. A dropped manual rescan is not: it is
-            // the only request that widens discovery, so under a 30-day or
-            // 90-day retention setting no later pass would cover the same
-            // ground. Queue it for the scheduler instead of losing it.
-            if matches!(trigger, ScanTrigger::ManualRescan) {
-                controller.request(ScanTrigger::ManualRescan);
+            // a pass on its own tick. A dropped historical pass is not: it is
+            // the only request that widens discovery past the current
+            // window, so no later routine pass would cover the same ground.
+            // Queue it for the scheduler instead of losing it.
+            if matches!(trigger, ScanTrigger::HistoricalScan) {
+                controller.request(ScanTrigger::HistoricalScan);
             }
             return None;
         }
@@ -790,6 +836,7 @@ pub(crate) async fn try_run_pass(
         });
         let _ = app.emit(EVENT_STARTED, started);
     }
+    history::push_progress(app, matches!(trigger, ScanTrigger::HistoricalScan));
     ::tracing::debug!(event = "scan_pass_started", trigger = trigger.label());
     let pass_started_at = Instant::now();
 
@@ -797,7 +844,7 @@ pub(crate) async fn try_run_pass(
 
     let controller = app.state::<ScanController>();
     let cancelled = controller.cancelled();
-    let finished = controller.update(|status| {
+    controller.update(|status| {
         status.running = false;
         status.cancelled = cancelled;
         status.finished_at = Some(crate::store::now_rfc3339());
@@ -827,6 +874,27 @@ pub(crate) async fn try_run_pass(
     if outcome.is_ok() {
         storage_health::note_ok(app);
     }
+    let covered = outcome.is_ok() && !cancelled;
+    if covered {
+        match (&trigger, &scope) {
+            // The first current-window pass to cover everything clears the
+            // automatic historical trigger's own gate.
+            (trigger, PassScope::Full) if !matches!(trigger, ScanTrigger::HistoricalScan) => {
+                controller.mark_current_pass_done();
+            }
+            (ScanTrigger::HistoricalScan, _) => {
+                let store = app.state::<Store>();
+                let retention_days = store.settings_snapshot().session_data_retention_days;
+                if history::window_secs(retention_days, unix_now()).is_some() {
+                    history::mark_done(&store, retention_days);
+                }
+            }
+            _ => {}
+        }
+    }
+    history::push_progress(app, false);
+    history::maybe_start_automatic_pass(app);
+    let finished = controller.status();
     let duration_ms = pass_started_at.elapsed().as_millis() as u64;
     match &outcome {
         Ok(summary) => {
@@ -951,7 +1019,13 @@ async fn pass(
 ) -> anyhow::Result<PassSummary> {
     let store = app.state::<Store>();
     let now = unix_now();
-    let since_secs = CURRENT_WINDOW_SECS;
+    let is_history_pass = matches!(trigger, ScanTrigger::HistoricalScan);
+    let since_secs = if is_history_pass {
+        let retention_days = store.settings_snapshot().session_data_retention_days;
+        history::window_secs(retention_days, now).unwrap_or(CURRENT_WINDOW_SECS)
+    } else {
+        CURRENT_WINDOW_SECS
+    };
 
     let ignored = ignored_paths::load_ignored(store.state_dir(), IGNORE_SCOPE);
     let home = home_dir().unwrap_or_default();
@@ -990,7 +1064,14 @@ async fn pass(
         })
         .collect::<Vec<_>>();
     let previous_records = store.session_records_for_activity_keys(&activity_keys)?;
-    let (logs, precomputed) = current_window_candidates(logs, &previous_records, now).await;
+    // The historical pass exists to cover sessions this filter would drop,
+    // so it skips it; a routine pass still needs it (Step 2's housekeeping
+    // problem, see `current_window_candidates`'s own doc comment).
+    let (logs, precomputed) = if is_history_pass {
+        (logs, std::collections::HashMap::new())
+    } else {
+        current_window_candidates(logs, &previous_records, now).await
+    };
     let include_non_repo_folders = store.settings_snapshot().include_non_repo_folders;
     let described = describe_with_gate(
         logs,

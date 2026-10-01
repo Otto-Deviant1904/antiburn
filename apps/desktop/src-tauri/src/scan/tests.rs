@@ -1783,7 +1783,26 @@ async fn a_second_request_before_the_scheduler_wakes_is_coalesced() {
 }
 
 #[test]
-fn a_manual_rescan_replaces_a_pending_automatic_trigger() {
+fn a_historical_scan_replaces_a_pending_automatic_trigger() {
+    let controller = ScanController::default();
+    controller.request(ScanTrigger::SettingsTransition);
+    controller.request(ScanTrigger::HistoricalScan);
+
+    let pending = controller
+        .pending_trigger
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(
+        matches!(pending.as_ref(), Some(ScanTrigger::HistoricalScan)),
+        "the historical scan must survive, because it is the only trigger that widens discovery \
+         past the current window"
+    );
+}
+
+/// A manual rescan used to have the same priority as a historical scan; now
+/// it coalesces like any other explicit, current-window trigger.
+#[test]
+fn a_manual_rescan_coalesces_like_any_other_trigger() {
     let controller = ScanController::default();
     controller.request(ScanTrigger::SettingsTransition);
     controller.request(ScanTrigger::ManualRescan);
@@ -1793,8 +1812,8 @@ fn a_manual_rescan_replaces_a_pending_automatic_trigger() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     assert!(
-        matches!(pending.as_ref(), Some(ScanTrigger::ManualRescan)),
-        "the manual rescan must survive, because it is the only trigger that widens discovery"
+        matches!(pending.as_ref(), Some(ScanTrigger::SettingsTransition)),
+        "the first trigger is kept, the second is dropped, same as two automatic triggers"
     );
 }
 
@@ -1873,6 +1892,7 @@ fn refreshes_repositories_is_false_only_for_the_tick_and_the_watcher_triggers() 
         ScanTrigger::FolderAccessGranted,
         ScanTrigger::IndexCleared,
         ScanTrigger::ManualRescan,
+        ScanTrigger::HistoricalScan,
     ];
     for trigger in &refreshing {
         assert!(

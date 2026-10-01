@@ -6,6 +6,8 @@ use super::{
     RemediationState, SessionKey, Store,
 };
 
+mod history_progress;
+
 const MAX_JSON_BYTES: usize = 32_768;
 const MAX_AGGREGATE_WINS: usize = 1_000;
 const MAX_PASSIVE_ENROLLMENTS_PER_PUBLICATION: usize = 100;

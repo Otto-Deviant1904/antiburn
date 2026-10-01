@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 
-import type { ScanStatus } from "../../lib/ipc"
-import { byteLabel, scanSummary } from "./GeneralPane"
+import type { ScanHistoryProgress, ScanStatus } from "../../lib/ipc"
+import { byteLabel, historyScanSummary, scanSummary } from "./GeneralPane"
 
 function status(overrides: Partial<ScanStatus> = {}): ScanStatus {
   return {
@@ -48,5 +48,38 @@ describe("scanSummary", () => {
       "The last scan was stopped before it finished.",
     )
     expect(scanSummary(status({ finishedAt }))).toBe("Last scanned 1m ago.")
+  })
+})
+
+function history(overrides: Partial<ScanHistoryProgress>): ScanHistoryProgress {
+  return { state: "none", completed: 0, total: 0, ...overrides }
+}
+
+describe("historyScanSummary", () => {
+  it("says nothing when there is no status, or retention keeps only the current window", () => {
+    expect(historyScanSummary(undefined)).toBe("")
+    expect(historyScanSummary(history({ state: "none" }))).toBe("")
+  })
+
+  it("tells a waiting reader the historical pass has not started yet", () => {
+    expect(historyScanSummary(history({ state: "pending" }))).toBe(
+      " It will also read your full history once the current scan is caught up.",
+    )
+  })
+
+  it("reports what the historical pass has found and read so far, singular and plural", () => {
+    expect(historyScanSummary(history({ state: "running", total: 1, completed: 0 }))).toBe(
+      " It has also found 1 older session so far, 0 read.",
+    )
+    expect(historyScanSummary(history({ state: "running", total: 40, completed: 12 }))).toBe(
+      " It has also found 40 older sessions so far, 12 read.",
+    )
+  })
+
+  it("reports the final count once done, or nothing when there was no history to find", () => {
+    expect(historyScanSummary(history({ state: "done", total: 40, completed: 40 }))).toBe(
+      " It has also read 40 older sessions.",
+    )
+    expect(historyScanSummary(history({ state: "done", total: 0, completed: 0 }))).toBe("")
   })
 })
