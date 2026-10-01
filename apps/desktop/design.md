@@ -553,7 +553,7 @@ components:
     separator: "{colors.separator} hairline between two unselected neighbours"
   list-display-toolbar:
     className: "ListDisplayToolbar + SegmentedControl variant=text-tabs"
-    selectedInk: "{colors.accent} by default; {colors.label} for the Sessions metric through selectedTone=neutral"
+    selectedInk: "{colors.label} by default for all text tabs; {colors.accent} only through selectedTone=accent"
     indicatorColor: "{colors.label}"
     typography: "{typography.footnote}" # size="regular" (default): 24px row, 12px gap
     height: 32px
@@ -1051,8 +1051,8 @@ dot; the timestamp never wraps. When the repository name exceeds
 18 monospace characters, the visible timestamp drops “ago”; its accessible label remains complete. The model line does
 not reserve inline space for the vendor mark. Group labels use sentence case. A
 shared `ListDisplayToolbar` places the pinned activity label and the right-aligned `text-tabs` badge metric control on one row with the labels Cost,
-Week %, and 5h %. Its accessible group name replaces redundant visible labels. The selected choice uses accent ink and a
-primary-label hairline underline by default. Sessions opts into neutral primary-label ink while retaining the underline. Each option links its
+Week %, and 5h %. Its accessible group name replaces redundant visible labels. The selected choice uses primary-label ink and a
+primary-label hairline underline by default. Set `selectedTone="accent"` to use accent ink for the selected label while retaining the neutral underline. Each option links its
 own shared tooltip description to its focusable radio: Cost explains estimated session cost, while Week % and 5h % explain the estimated share
 of the provider limit for that window when available. The control crossfades only color and underline opacity over `--duration-quick`; it never slides a moving indicator.
 

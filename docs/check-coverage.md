@@ -383,9 +383,13 @@ spend attribution; all check-specific route and API requirements below remain
 unchanged. See [`session-lifecycle-events.md`](session-lifecycle-events.md#scoped-sweep-evidence).
 
 Burn checks use only sessions admitted by the repository scan gate. A session
-needs a resolvable Git repository CWD. Disabled roots and their linked
+needs a resolvable Git repository CWD, either recorded or inferred from
+transcript paths below a parent-folder CWD. Disabled roots and their linked
 worktrees are excluded before evidence processing; missing or unresolved CWDs
-are unavailable, never clean.
+are unavailable, never clean. When "Include folders without git" is on, a
+session outside a repository enters the index with no project root. Its findings
+can still show, but its agent's resource inventory counts as limited, so that
+agent gets no clean result, and remediation has no repository target to edit.
 
 No current session reader proves a full historical resource inventory. The
 legacy per-session M/B/K rules deny `Clean`, even when a nested observed-resource

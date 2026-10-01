@@ -205,7 +205,7 @@ eventemitter3@5.0.4 | MIT | https://github.com/primus/eventemitter3#readme
 get-nonce@1.0.1 | MIT | https://github.com/theKashey/get-nonce
 immer@11.1.16 | MIT | https://github.com/immerjs/immer#readme
 internmap@2.0.3 | ISC | https://github.com/mbostock/internmap/
-lucide-react@1.47.0 | ISC | https://lucide.dev
+lucide-react@1.48.0 | ISC | https://lucide.dev
 react-dom@19.3.0 | MIT | https://react.dev/
 react-is@17.0.2 | MIT | https://reactjs.org/
 react-redux@9.3.0 | MIT | https://github.com/reduxjs/react-redux
@@ -218,7 +218,7 @@ redux-thunk@3.1.0 | MIT | https://github.com/reduxjs/redux-thunk
 redux@5.0.1 | MIT | http://redux.js.org
 reselect@5.2.0 | MIT | https://github.com/reduxjs/reselect#readme
 scheduler@0.28.0 | MIT | https://react.dev/
-simple-icons@16.31.0 | CC0-1.0 | https://simpleicons.org
+simple-icons@16.32.0 | CC0-1.0 | https://simpleicons.org
 tiny-invariant@1.3.3 | MIT | https://github.com/alexreardon/tiny-invariant#readme
 tslib@2.8.1 | 0BSD | https://www.typescriptlang.org/
 use-callback-ref@1.3.3 | MIT | https://github.com/theKashey/use-callback-ref#readme
@@ -397,7 +397,7 @@ getrandom@0.4.3 | MIT OR Apache-2.0 | https://github.com/rust-random/getrandom
 gio-sys@0.18.1 | MIT | https://github.com/gtk-rs/gtk-rs-core
 gio-sys@0.22.9 | MIT | https://github.com/gtk-rs/gtk-rs-core
 gio@0.18.4 | MIT | https://github.com/gtk-rs/gtk-rs-core
-gio@0.22.9 | MIT | https://github.com/gtk-rs/gtk-rs-core
+gio@0.22.10 | MIT | https://github.com/gtk-rs/gtk-rs-core
 glam@0.28.0 | MIT OR Apache-2.0 | https://github.com/bitshifter/glam-rs
 glib-macros@0.18.5 | MIT | https://github.com/gtk-rs/gtk-rs-core
 glib-macros@0.22.9 | MIT | https://github.com/gtk-rs/gtk-rs-core
@@ -461,7 +461,7 @@ javascriptcore-rs@1.1.2 | MIT | https://github.com/tauri-apps/javascriptcore-rs
 jiff-core@0.1.0 | Unlicense OR MIT | https://github.com/BurntSushi/jiff
 jiff-tzdb-platform@0.1.3 | Unlicense OR MIT | https://github.com/BurntSushi/jiff
 jiff-tzdb@0.1.8 | Unlicense OR MIT | https://github.com/BurntSushi/jiff
-jiff@0.2.35 | Unlicense OR MIT | https://github.com/BurntSushi/jiff
+jiff@0.2.37 | Unlicense OR MIT | https://github.com/BurntSushi/jiff
 json-patch@3.0.1 | MIT OR Apache-2.0 | https://github.com/idubrov/json-patch
 jsonptr@0.6.3 | MIT OR Apache-2.0 | https://github.com/chanced/jsonptr
 keyboard-types@0.7.0 | MIT OR Apache-2.0 | https://github.com/pyfisch/keyboard-types
@@ -689,21 +689,21 @@ tauri-plugin-dialog@2.7.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/pl
 tauri-plugin-fs@2.5.2 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace
 tauri-plugin-opener@2.5.5 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace
 tauri-plugin-prevent-default@5.0.2 | MIT | https://github.com/ferreira-tb/tauri-plugin-prevent-default
-tauri-plugin-single-instance@2.4.4 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace
-tauri-plugin-updater@2.11.0 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace
+tauri-plugin-single-instance@2.4.5 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace
+tauri-plugin-updater@2.12.0 | Apache-2.0 OR MIT | https://github.com/tauri-apps/plugins-workspace
 tauri-plugin@2.6.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri
 tauri-runtime-wry@2.11.4 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri
 tauri-runtime@2.11.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri
 tauri-utils@2.9.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri
 tauri-winres@0.3.6 | MIT | https://github.com/tauri-apps/winres
-tauri@2.11.5 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri
+tauri@2.11.6 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri
 tempfile@3.27.0 | MIT OR Apache-2.0 | https://github.com/Stebalien/tempfile
 tendril@0.5.1 | MIT OR Apache-2.0 | https://github.com/servo/html5ever
 thingbuf@0.1.6 | MIT | https://github.com/hawkw/thingbuf
 thiserror-impl@1.0.69 | MIT OR Apache-2.0 | https://github.com/dtolnay/thiserror
-thiserror-impl@2.0.20 | MIT OR Apache-2.0 | https://github.com/dtolnay/thiserror
+thiserror-impl@2.0.21 | MIT OR Apache-2.0 | https://github.com/dtolnay/thiserror
 thiserror@1.0.69 | MIT OR Apache-2.0 | https://github.com/dtolnay/thiserror
-thiserror@2.0.20 | MIT OR Apache-2.0 | https://github.com/dtolnay/thiserror
+thiserror@2.0.21 | MIT OR Apache-2.0 | https://github.com/dtolnay/thiserror
 thread_local@1.1.10 | MIT OR Apache-2.0 | https://github.com/Amanieu/thread_local-rs
 tiff@0.11.3 | MIT | https://github.com/image-rs/image-tiff
 time-core@0.1.9 | MIT OR Apache-2.0 | https://github.com/time-rs/time
@@ -779,6 +779,7 @@ wide@1.6.1 | Zlib OR Apache-2.0 OR MIT | https://github.com/Lokathor/wide
 winapi-util@0.1.11 | Unlicense OR MIT | https://github.com/BurntSushi/winapi-util
 winapi@0.3.9 | MIT OR Apache-2.0 | https://github.com/retep998/winapi-rs
 window-vibrancy@0.6.0 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri-plugin-vibrancy
+window-vibrancy@0.8.1 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri-plugin-vibrancy
 windows-collections@0.2.0 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows-collections@0.3.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
 windows-core@0.61.2 | MIT OR Apache-2.0 | https://github.com/microsoft/windows-rs
@@ -1483,9 +1484,9 @@ Used by:
   system-deps@6.2.2
   system-deps@9.0.0
   thiserror-impl@1.0.69
-  thiserror-impl@2.0.20
+  thiserror-impl@2.0.21
   thiserror@1.0.69
-  thiserror@2.0.20
+  thiserror@2.0.21
   typeid@1.0.3
   unicode-ident@1.0.24
   x11-dl@2.21.0
@@ -1588,7 +1589,7 @@ Used by:
   jiff-core@0.1.0
   jiff-tzdb-platform@0.1.3
   jiff-tzdb@0.1.8
-  jiff@0.2.35
+  jiff@0.2.37
   memchr@2.8.3
   walkdir@2.5.0
 
@@ -1837,7 +1838,7 @@ Used by:
   gio-sys@0.18.1
   gio-sys@0.22.9
   gio@0.18.4
-  gio@0.22.9
+  gio@0.22.10
   glib-macros@0.18.5
   glib-macros@0.22.9
   glib-sys@0.18.1
@@ -2193,13 +2194,13 @@ Used by:
   tauri-plugin-dialog@2.7.3
   tauri-plugin-fs@2.5.2
   tauri-plugin-opener@2.5.5
-  tauri-plugin-single-instance@2.4.4
-  tauri-plugin-updater@2.11.0
+  tauri-plugin-single-instance@2.4.5
+  tauri-plugin-updater@2.12.0
   tauri-plugin@2.6.3
   tauri-runtime-wry@2.11.4
   tauri-runtime@2.11.3
   tauri-utils@2.9.3
-  tauri@2.11.5
+  tauri@2.11.6
   unic-char-property@0.9.0
   unic-char-range@0.9.0
   unic-common@0.9.0
@@ -6672,7 +6673,7 @@ DEALINGS IN THE SOFTWARE.
 ========================================
 
 Used by:
-  lucide-react@1.47.0
+  lucide-react@1.48.0
 
 ISC License
 
@@ -9894,7 +9895,7 @@ SOFTWARE.
 ========================================
 
 Used by:
-  simple-icons@16.31.0
+  simple-icons@16.32.0
 
 # CC0 1.0 Universal
 
@@ -11706,6 +11707,7 @@ SOFTWARE.
 
 Used by:
   window-vibrancy@0.6.0
+  window-vibrancy@0.8.1
 
 MIT License
 

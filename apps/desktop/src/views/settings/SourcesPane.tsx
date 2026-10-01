@@ -1,4 +1,4 @@
-import { SettingsSectionGroup } from "./SettingsSearchRows"
+import { SettingsSectionGroup, SettingsToggleRow } from "./SettingsSearchRows"
 import { FolderPlus, RefreshCw, X } from "lucide-react"
 import { useCallback, useState, useSyncExternalStore } from "react"
 
@@ -235,6 +235,14 @@ export function SourcesPane({ discoveryPaused, appVersion = "VERSION" }: Sources
                 onLocate={() => void handleLocate()}
               />
             </div>
+          </Card>
+          <Card>
+            <SettingsToggleRow
+              searchId="sourceNonRepoFolders"
+              description="Counts sessions started in a folder that isn't a repository. Burn checks still need a repository."
+              checked={settings.includeNonRepoFolders}
+              onChange={(next) => void update({ includeNonRepoFolders: next })}
+            />
           </Card>
         </SettingsSectionGroup>
       </div>
