@@ -552,8 +552,13 @@ pub(crate) async fn process_next(
     report_ingested: &(dyn Fn(AgentKind, IngestedIncidents) + Send + Sync),
     on_claimed: &(dyn Fn() + Send + Sync),
 ) -> anyhow::Result<bool> {
-    let Some(claim) =
-        store.claim_next_evidence(&crate::agents::evidence_cohort(), clock(), LEASE_SECS)?
+    // Newest-active session first, so a current session never waits behind
+    // a history one in the same backlog.
+    let Some(claim) = store.claim_next_evidence_by_recency(
+        &crate::agents::evidence_cohort(),
+        clock(),
+        LEASE_SECS,
+    )?
     else {
         return Ok(false);
     };

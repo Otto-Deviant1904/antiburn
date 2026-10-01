@@ -514,6 +514,49 @@ async fn a_hot_source_does_not_starve_a_stable_session() {
 }
 
 #[test]
+fn claim_next_evidence_by_recency_prefers_the_most_recently_active_session() {
+    let store = store();
+    store
+        .upsert_sessions(
+            &[
+                SessionRecord {
+                    updated_at_epoch: Some(50),
+                    ..record("old")
+                },
+                SessionRecord {
+                    updated_at_epoch: Some(500),
+                    ..record("new")
+                },
+                SessionRecord {
+                    updated_at_epoch: None,
+                    ..record("unknown-activity")
+                },
+            ],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+
+    let first = store
+        .claim_next_evidence_by_recency(&crate::agents::evidence_cohort(), 1_000, LEASE_SECS)
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.key.session_id, "new");
+
+    let second = store
+        .claim_next_evidence_by_recency(&crate::agents::evidence_cohort(), 1_000, LEASE_SECS)
+        .unwrap()
+        .unwrap();
+    assert_eq!(second.key.session_id, "old");
+
+    // Unknown activity never jumps ahead of a known one: it claims last.
+    let third = store
+        .claim_next_evidence_by_recency(&crate::agents::evidence_cohort(), 1_000, LEASE_SECS)
+        .unwrap()
+        .unwrap();
+    assert_eq!(third.key.session_id, "unknown-activity");
+}
+
+#[test]
 fn an_un_stat_able_source_stops_being_claimed() {
     let store = store();
     let claim = claim(&store, "missing", 100);
