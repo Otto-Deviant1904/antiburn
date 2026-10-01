@@ -1799,6 +1799,9 @@ async fn pi_file_flows_through_worker_persistence_and_report() {
     pi.key.agent = "pi".to_owned();
     pi.source_label = source_path.to_string_lossy().into_owned();
     pi.source_fingerprint = Some("sv1:synthetic-pi-worker".to_owned());
+    // The report below windows by last activity now, not by start time, so
+    // this fixture's activity must fall inside the window it queries.
+    pi.updated_at_epoch = Some(1_767_225_610);
     store
         .upsert_sessions(std::slice::from_ref(&pi), &crate::agents::evidence_cohort())
         .unwrap();
