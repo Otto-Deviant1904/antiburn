@@ -32,7 +32,13 @@ export function targetCostLine(target: BurnCheckTargetPayload): string | null {
   return `${formatApiEquivalentUsd(opportunity.value)} in cache reads of this unused definition across ${occurrences} occurrence${occurrences === 1 ? "" : "s"}, sub-agent requests included.`
 }
 
-function EvidenceExcerpt({ item }: { item: BurnCheckTargetEvidencePayload["items"][number] }) {
+function EvidenceExcerpt({
+  item,
+  showMetadata = true,
+}: {
+  item: BurnCheckTargetEvidencePayload["items"][number]
+  showMetadata?: boolean
+}) {
   let text = item.excerpt
   if (item.label === "observedAction") {
     try {
@@ -52,10 +58,12 @@ function EvidenceExcerpt({ item }: { item: BurnCheckTargetEvidencePayload["items
   const compact = text.replace(/\s+/g, " ").trim()
   return (
     <div className="space-y-1">
-      <p className="type-caption text-label-tertiary">
-        {item.sourceLabel}
-        {item.explanation ? ` · ${item.explanation}` : ""}
-      </p>
+      {showMetadata && (
+        <p className="type-caption text-label-tertiary">
+          {item.sourceLabel}
+          {item.explanation ? ` · ${item.explanation}` : ""}
+        </p>
+      )}
       <p className="break-words rounded-control bg-surface-card px-3 py-2 type-callout text-label">
         {compact}
       </p>
@@ -110,7 +118,7 @@ function IgnoredInstructionEvidence({
               {instruction.startLine != null &&
                 ` · line${instruction.endLine !== instruction.startLine ? "s" : ""} ${instruction.startLine}${instruction.endLine !== instruction.startLine ? `–${instruction.endLine}` : ""}`}
             </p>
-            <EvidenceExcerpt item={instruction} />
+            <EvidenceExcerpt item={instruction} showMetadata={false} />
           </>
         ) : (
           <p
@@ -129,7 +137,7 @@ function IgnoredInstructionEvidence({
         <p className="type-callout font-medium text-label">Where it was ignored</p>
         {action ? (
           <>
-            <EvidenceExcerpt item={action} />
+            <EvidenceExcerpt item={action} showMetadata={false} />
             {action.observedAtMs != null && (
               <time
                 dateTime={new Date(action.observedAtMs).toISOString()}
@@ -275,6 +283,10 @@ export function BurnCheckTargetDetail({
     [target.evidenceAvailable, openEvidence, loadEvidence],
   )
   const ignoredInstructions = target.finding.detector === "ignoredInstructions"
+  const hasInstructionExcerpt =
+    evidenceState?.status === "loaded" &&
+    evidenceState.evidence?.status === "available" &&
+    evidenceState.evidence.items.some((item) => item.label === "instruction")
   const status = watchStatus(target)
   const guidance = CHECK_UI[target.finding.detector]
   const costLine = targetCostLine(target)
@@ -307,7 +319,9 @@ export function BurnCheckTargetDetail({
         <div className="flex items-center gap-1.5 type-callout text-label-tertiary">
           <span className="min-w-0 wrap-anywhere">
             {scopeLabel(target.display.scopeKind)}
-            {sourcePath && ` (${sourcePath})`}
+            {sourcePath &&
+              (!ignoredInstructions || !hasInstructionExcerpt) &&
+              ` (${sourcePath})`}
             {reportRow && target.projectName && (
               <span className="text-label"> · {target.projectName}</span>
             )}

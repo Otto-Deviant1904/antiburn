@@ -231,6 +231,7 @@ describe("BurnCheckTargetDetail", () => {
       await screen.findByText("Do not use broad searches when exploring a codebase."),
     ).toBeInTheDocument()
     expect(screen.getByText("Instruction")).toBeInTheDocument()
+    expect(screen.getByText(".config/opencode/AGENTS.md · line 45")).toBeInTheDocument()
     expect(screen.getByRole("region", { name: "Evidence" })).not.toHaveClass("border-t")
     expect(screen.getByText("rg -n 'long search string' .")).toBeInTheDocument()
     expect(screen.queryByText("Unneeded surrounding event")).not.toBeInTheDocument()
@@ -503,6 +504,11 @@ describe("BurnCheckTargetDetail", () => {
       fireEvent.click(screen.getByRole("button", { name: "Show evidence" })),
     )
     expect(await screen.findByText("git push --force")).toBeInTheDocument()
+    expect(
+      screen.queryByText(
+        "Observed session action · This is the action cited by the assessment.",
+      ),
+    ).not.toBeInTheDocument()
     expect(
       screen.getByText("Global configuration (~/.config/opencode/AGENTS.md)"),
     ).toBeInTheDocument()
