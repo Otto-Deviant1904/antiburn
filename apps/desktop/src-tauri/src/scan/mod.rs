@@ -836,7 +836,7 @@ pub(crate) async fn try_run_pass(
         });
         let _ = app.emit(EVENT_STARTED, started);
     }
-    history::push_progress(app, matches!(trigger, ScanTrigger::HistoricalScan));
+    history::push_progress(app, matches!(trigger, ScanTrigger::HistoricalScan), true);
     ::tracing::debug!(event = "scan_pass_started", trigger = trigger.label());
     let pass_started_at = Instant::now();
 
@@ -892,7 +892,7 @@ pub(crate) async fn try_run_pass(
             _ => {}
         }
     }
-    history::push_progress(app, false);
+    history::push_progress(app, false, true);
     history::maybe_start_automatic_pass(app);
     let finished = controller.status();
     let duration_ms = pass_started_at.elapsed().as_millis() as u64;
@@ -2240,18 +2240,18 @@ async fn describe_one_with_activity(
     let subagent_count = children.len() as u32;
     let fork_parent_session_id = fork_parent_session_id_for(&log, preview).await;
 
-    // The current-window filter already answered this for a candidate it
-    // let through, from the same rules this would apply — reuse it instead
-    // of reading the source again. A history pass, which skips that filter,
-    // has nothing precomputed and falls back to asking directly.
-    let (updated_at_epoch, activity_source, activity_cursor) = match precomputed_activity {
-        Some(activity) => (
-            activity.updated_at_epoch,
-            activity.activity_source,
-            activity.activity_cursor,
-        ),
-        None => semantic_activity_for_log(&log, previous.as_ref(), &children, preview).await,
-    };
+    // Reuse the current-window filter's answer only when it found an event
+    // timestamp. The filter reads the tail only, so its mtime fallback can
+    // miss events that the preview holds.
+    let (updated_at_epoch, activity_source, activity_cursor) =
+        match precomputed_activity.filter(|activity| activity.activity_source == "event") {
+            Some(activity) => (
+                activity.updated_at_epoch,
+                activity.activity_source,
+                activity.activity_cursor,
+            ),
+            None => semantic_activity_for_log(&log, previous.as_ref(), &children, preview).await,
+        };
     let descriptor = SourceDescriptor {
         agent: log.agent_type,
         session_id: session_id.clone(),

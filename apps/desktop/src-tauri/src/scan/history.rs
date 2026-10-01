@@ -99,17 +99,21 @@ pub(crate) fn compute(store: &Store, now: i64, pass_running: bool) -> ScanHistor
 }
 
 /// Push the live history progress onto [`crate::dto::ScanStatus`], and emit
-/// it through the scan progress event, throttled to roughly once a second.
-/// The stored status always carries the fresh value; only the event is
-/// throttled, so a reader polling `get_scan_status` never sees a stale one.
-pub(crate) fn push_progress(app: &AppHandle, pass_running: bool) {
+/// it through the scan progress event.
+///
+/// The worker calls this after each analysed session, so an unforced call
+/// runs at most about once a second: the count query holds the store lock.
+/// Use `force` at the edges (a pass starts or ends, the backlog drains), so
+/// the last state always reaches the reader.
+pub(crate) fn push_progress(app: &AppHandle, pass_running: bool, force: bool) {
+    let controller = app.state::<ScanController>();
+    if !controller.throttle_history_emit() && !force {
+        return;
+    }
     let store = app.state::<Store>();
     let progress = compute(&store, unix_now(), pass_running);
-    let controller = app.state::<ScanController>();
     let status = controller.update(|status| status.history = Some(progress));
-    if controller.throttle_history_emit() {
-        let _ = app.emit(EVENT_PROGRESS, status);
-    }
+    let _ = app.emit(EVENT_PROGRESS, status);
 }
 
 /// Ask the scheduler for the one-time automatic historical pass, if the
