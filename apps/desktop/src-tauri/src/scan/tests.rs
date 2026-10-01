@@ -1059,6 +1059,110 @@ async fn an_idle_touched_transcript_heals_mtime_recency_and_then_uses_size_gate(
 }
 
 #[tokio::test]
+async fn the_current_window_filter_drops_a_housekeeping_touched_old_session() {
+    let home = tempfile::TempDir::new().unwrap();
+    let path = home
+        .path()
+        .join(".claude/projects/-home-avery-code-widgets/old.jsonl");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        concat!(
+            r#"{"type":"user","sessionId":"old","cwd":"/home/avery/code/widgets","timestamp":"2026-06-26T21:20:00Z"}"#,
+            "\n",
+            r#"{"type":"assistant","timestamp":"2026-06-26T21:30:15Z"}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+    // A small housekeeping-only append. The real conversation turn above
+    // stays inside the bounded tail, so the filter can still find it.
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap()
+        .write_all(
+            br#"{"type":"permission-mode","mode":"default","timestamp":"2026-08-19T17:08:00Z"}
+"#,
+        )
+        .unwrap();
+
+    let old_activity = time::OffsetDateTime::parse(
+        "2026-06-26T21:30:15Z",
+        &time::format_description::well_known::Rfc3339,
+    )
+    .unwrap()
+    .unix_timestamp();
+    // The file's mtime looks like right now, inside any current window; only
+    // the real event content tells the filter this session is history.
+    let now = old_activity + 60 * 86_400;
+    let cutoff = now - CURRENT_WINDOW_SECS;
+    assert!(old_activity < cutoff, "fixture must predate the cutoff");
+
+    let candidate = log(AgentKind::Claude, path, now);
+    let kept =
+        filter_current_window(vec![candidate], &std::collections::HashMap::new(), cutoff).await;
+    assert!(
+        kept.is_empty(),
+        "a session whose real last activity predates the cutoff must be dropped"
+    );
+}
+
+#[tokio::test]
+async fn the_current_window_filter_always_keeps_an_unknown_activity_source() {
+    // A non-file source never resolves an event timestamp at all, so the
+    // filter keeps it regardless of how far in the past the cutoff reaches.
+    let candidate = SessionLog {
+        agent_type: AgentKind::OpenCode,
+        source: SessionSource::Inline {
+            label: "inline".into(),
+            content: String::new(),
+        },
+        updated_at: Some(1_000),
+        environment: DiscoveryEnvironment::Native,
+    };
+    let kept =
+        filter_current_window(vec![candidate], &std::collections::HashMap::new(), i64::MAX).await;
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].1.activity_source, "unknown");
+}
+
+#[tokio::test]
+async fn describe_trusts_precomputed_activity_instead_of_recomputing_it() {
+    let home = tempfile::TempDir::new().unwrap();
+    let path = write_claude_session(home.path(), "precomputed-activity");
+    let candidate_log = log(AgentKind::Claude, path.clone(), 1_800_000_000);
+    let activity_key = SessionActivityKey::new(
+        candidate_log.environment.key(),
+        candidate_log.agent_type.slug(),
+        candidate_log.source_label(),
+    );
+    let mut precomputed = std::collections::HashMap::new();
+    precomputed.insert(
+        activity_key,
+        CandidateActivity {
+            updated_at_epoch: Some(424_242),
+            activity_source: "event".into(),
+            activity_cursor: "sentinel-cursor".into(),
+        },
+    );
+
+    let described = describe_with_gate(
+        vec![candidate_log],
+        home.path(),
+        &HashSet::new(),
+        &std::collections::HashMap::new(),
+        &precomputed,
+        false,
+    )
+    .await;
+
+    assert_eq!(described.records.len(), 1);
+    assert_eq!(described.records[0].updated_at_epoch, Some(424_242));
+    assert_eq!(described.records[0].activity_cursor, "sentinel-cursor");
+}
+
+#[tokio::test]
 async fn an_orchestrator_cursor_gates_unchanged_children_and_advances_on_child_growth() {
     let home = tempfile::TempDir::new().unwrap();
     let parent = write_claude_session(home.path(), "orchestrator");

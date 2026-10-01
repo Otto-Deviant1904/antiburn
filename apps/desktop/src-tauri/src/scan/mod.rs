@@ -990,12 +990,14 @@ async fn pass(
         })
         .collect::<Vec<_>>();
     let previous_records = store.session_records_for_activity_keys(&activity_keys)?;
+    let (logs, precomputed) = current_window_candidates(logs, &previous_records, now).await;
     let include_non_repo_folders = store.settings_snapshot().include_non_repo_folders;
     let described = describe_with_gate(
         logs,
         &home,
         &ignored,
         &previous_records,
+        &precomputed,
         include_non_repo_folders,
     )
     .await;
@@ -1493,6 +1495,114 @@ struct Described {
     list_changed: bool,
 }
 
+/// One candidate's last activity, computed by [`filter_current_window`]
+/// before describe runs. Carrying it forward means describe never asks
+/// [`semantic_activity_for_log`] the same question twice.
+#[derive(Clone)]
+struct CandidateActivity {
+    updated_at_epoch: Option<i64>,
+    activity_source: String,
+    activity_cursor: String,
+}
+
+/// The sub-agent transcripts one orchestrator-capable log lists, or an empty
+/// list for an agent that records no orchestration. Shared by the current-
+/// window filter and by describe, so both ask the engine the same question.
+async fn subagent_children_for(log: &SessionLog) -> Vec<std::path::PathBuf> {
+    match &log.source {
+        SessionSource::File(path)
+            if matches!(log.agent_type, AgentKind::Claude | AgentKind::Codex) =>
+        {
+            Explorers::DISK
+                .list_subagents_for_transcript(&log.agent_type, path)
+                .await
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Drop a discovery candidate whose last activity predates the current
+/// window, so a current pass never admits a session on the strength of a
+/// housekeeping-only append to its transcript.
+///
+/// Shares [`semantic_activity_for_log`]'s event-timestamp rules rather than
+/// forking them: a candidate whose source carries no event timestamp at all
+/// ("unknown" — a non-file source) is always kept, as today. One agent's
+/// candidates at a time, so a later per-agent "found" count can report after
+/// this filter runs, and so the first-run UI can report per agent.
+///
+/// Returns the survivors together with the activity this pass already
+/// computed for them, so describe reuses it instead of reading the source a
+/// second time.
+async fn filter_current_window(
+    logs: Vec<SessionLog>,
+    previous_records: &std::collections::HashMap<SessionActivityKey, SessionRecord>,
+    cutoff: i64,
+) -> Vec<(SessionLog, CandidateActivity)> {
+    let mut kept = Vec::with_capacity(logs.len());
+    for log in logs {
+        let activity_key = SessionActivityKey::new(
+            log.environment.key(),
+            log.agent_type.slug(),
+            log.source_label(),
+        );
+        let previous = previous_records.get(&activity_key);
+        let children = subagent_children_for(&log).await;
+        let (updated_at_epoch, activity_source, activity_cursor) =
+            semantic_activity_for_log(&log, previous, &children, None).await;
+        let current =
+            activity_source == "unknown" || updated_at_epoch.is_none_or(|at| at >= cutoff);
+        if current {
+            kept.push((
+                log,
+                CandidateActivity {
+                    updated_at_epoch,
+                    activity_source,
+                    activity_cursor,
+                },
+            ));
+        }
+    }
+    kept
+}
+
+/// Apply [`filter_current_window`] to every agent's candidates, and split the
+/// survivors back into a plain log list plus the activity describe reuses.
+///
+/// Discovery returns one merged list across every agent; this groups it back
+/// by agent before filtering, so the filter itself stays the one-agent
+/// function the design calls for.
+async fn current_window_candidates(
+    logs: Vec<SessionLog>,
+    previous_records: &std::collections::HashMap<SessionActivityKey, SessionRecord>,
+    now: i64,
+) -> (
+    Vec<SessionLog>,
+    std::collections::HashMap<SessionActivityKey, CandidateActivity>,
+) {
+    let cutoff = now - CURRENT_WINDOW_SECS;
+    let mut by_agent: BTreeMap<AgentKind, Vec<SessionLog>> = BTreeMap::new();
+    for log in logs {
+        by_agent.entry(log.agent_type).or_default().push(log);
+    }
+    let mut survivors = Vec::new();
+    for agent_logs in by_agent.into_values() {
+        survivors.extend(filter_current_window(agent_logs, previous_records, cutoff).await);
+    }
+    let mut logs = Vec::with_capacity(survivors.len());
+    let mut precomputed = std::collections::HashMap::with_capacity(survivors.len());
+    for (log, activity) in survivors {
+        let activity_key = SessionActivityKey::new(
+            log.environment.key(),
+            log.agent_type.slug(),
+            log.source_label(),
+        );
+        precomputed.insert(activity_key, activity);
+        logs.push(log);
+    }
+    (logs, precomputed)
+}
+
 /// Read metadata for every discovered log, at a bounded concurrency, and drop
 /// the ones the reader opted out of.
 #[cfg(test)]
@@ -1511,18 +1621,31 @@ async fn describe_with_states(
     ignored: &std::collections::HashSet<String>,
     previous_records: &std::collections::HashMap<SessionActivityKey, SessionRecord>,
 ) -> Described {
-    describe_with_gate(logs, home, ignored, previous_records, false).await
+    describe_with_gate(
+        logs,
+        home,
+        ignored,
+        previous_records,
+        &std::collections::HashMap::new(),
+        false,
+    )
+    .await
 }
 
 /// Describe `logs` and apply the repository scan gate.
 ///
 /// `include_non_repo_folders` keeps a session whose CWD has no repository
-/// under that CWD. See [`repo_admission`].
+/// under that CWD. See [`repo_admission`]. `precomputed` holds the activity
+/// [`filter_current_window`] already worked out for a candidate, keyed the
+/// same way as `previous_records`; a history pass (which skips that filter)
+/// passes an empty map, and every candidate falls back to describe's own
+/// computation exactly as before.
 async fn describe_with_gate(
     logs: Vec<SessionLog>,
     home: &std::path::Path,
     ignored: &std::collections::HashSet<String>,
     previous_records: &std::collections::HashMap<SessionActivityKey, SessionRecord>,
+    precomputed: &std::collections::HashMap<SessionActivityKey, CandidateActivity>,
     include_non_repo_folders: bool,
 ) -> Described {
     // Scan unit fixtures skip the repository gate. The `repo_admission` tests
@@ -1546,6 +1669,7 @@ async fn describe_with_gate(
                 log.source_label(),
             );
             let previous = previous_records.get(&activity_key).cloned();
+            let activity = precomputed.get(&activity_key).cloned();
             let indexed_title = recovered_id(&log)
                 .and_then(|session_id| indexed_titles.get(&(log.agent_type, session_id)).cloned());
             set.spawn(async move {
@@ -1555,7 +1679,8 @@ async fn describe_with_gate(
                     let changed = previous.as_ref().is_some_and(|stored| stored != &reused);
                     return (DescribeOutcome::Session(Box::new(reused)), changed);
                 }
-                let outcome = describe_one_with_activity(log, &home, indexed_title, previous).await;
+                let outcome =
+                    describe_one_with_activity(log, &home, indexed_title, previous, activity).await;
                 (outcome, true)
             });
         }
@@ -1978,7 +2103,7 @@ async fn describe_one(
     home: &std::path::Path,
     indexed_title: Option<ResolvedTitle>,
 ) -> DescribeOutcome {
-    describe_one_with_activity(log, home, indexed_title, None).await
+    describe_one_with_activity(log, home, indexed_title, None, None).await
 }
 
 async fn describe_one_with_activity(
@@ -1986,6 +2111,7 @@ async fn describe_one_with_activity(
     home: &std::path::Path,
     indexed_title: Option<ResolvedTitle>,
     previous: Option<SessionRecord>,
+    precomputed_activity: Option<CandidateActivity>,
 ) -> DescribeOutcome {
     let read = session_log_read(&log).await;
     let metadata = read.as_ref().map(|read| &read.metadata);
@@ -2029,21 +2155,22 @@ async fn describe_one_with_activity(
 
     // A dir listing per orchestrator-capable session; vendors that record no
     // orchestration return empty without touching the disk.
-    let children = match &log.source {
-        SessionSource::File(path)
-            if matches!(log.agent_type, AgentKind::Claude | AgentKind::Codex) =>
-        {
-            Explorers::DISK
-                .list_subagents_for_transcript(&log.agent_type, path)
-                .await
-        }
-        _ => Vec::new(),
-    };
+    let children = subagent_children_for(&log).await;
     let subagent_count = children.len() as u32;
     let fork_parent_session_id = fork_parent_session_id_for(&log, preview).await;
 
-    let (updated_at_epoch, activity_source, activity_cursor) =
-        semantic_activity_for_log(&log, previous.as_ref(), &children, preview).await;
+    // The current-window filter already answered this for a candidate it
+    // let through, from the same rules this would apply — reuse it instead
+    // of reading the source again. A history pass, which skips that filter,
+    // has nothing precomputed and falls back to asking directly.
+    let (updated_at_epoch, activity_source, activity_cursor) = match precomputed_activity {
+        Some(activity) => (
+            activity.updated_at_epoch,
+            activity.activity_source,
+            activity.activity_cursor,
+        ),
+        None => semantic_activity_for_log(&log, previous.as_ref(), &children, preview).await,
+    };
     let descriptor = SourceDescriptor {
         agent: log.agent_type,
         session_id: session_id.clone(),
