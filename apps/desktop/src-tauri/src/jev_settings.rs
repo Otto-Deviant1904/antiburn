@@ -407,6 +407,11 @@ pub(crate) async fn set_typesafe_api_key(
     store
         .set_internal_value_checked(CREDENTIAL_CHANGE_PENDING_KEY, "false")
         .map_err(|_| "Could not save the credential update state.".to_owned())?;
+    if replacing {
+        store
+            .retry_rejected_burn_checks()
+            .map_err(|_| "Could not schedule checks after replacing the API key.".to_owned())?;
+    }
     store.set_internal_value(AUTH_REJECTED_KEY, "false");
     app.state::<WorkerHandle>().set_api_key(Some(key));
     #[cfg(feature = "analytics")]

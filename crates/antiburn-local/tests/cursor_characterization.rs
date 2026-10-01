@@ -318,6 +318,20 @@ fn native_message_variants_preserve_authority_and_tool_identity() {
 }
 
 #[test]
+fn array_tool_result_keeps_outer_tool_identity() {
+    let source = include_str!("fixtures/cursor_characterization/array_tool_result.jsonl");
+    let mut sink = CursorRecordingSink::default();
+    reader_for("cursor")
+        .visit(&input(RawSource::Jsonl(source.to_owned())), &mut sink)
+        .unwrap();
+    let result = &sink.contents[1].parts[0];
+    assert_eq!(result.kind, ContentKind::ToolResult);
+    assert_eq!(result.text, "first\nsecond");
+    assert_eq!(result.tool_name.as_deref(), Some("Shell"));
+    assert_eq!(result.tool_call_id.as_deref(), Some("call-1"));
+}
+
+#[test]
 fn resource_tool_calls_remain_unclassified_without_resource_metadata() {
     let input = input(RawSource::Jsonl(
         include_str!("fixtures/cursor_characterization/unclassified_resource_calls.jsonl")

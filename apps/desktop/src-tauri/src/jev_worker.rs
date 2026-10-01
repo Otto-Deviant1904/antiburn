@@ -23,7 +23,7 @@ const IDLE_SECS: i64 = 180;
 const RETRY_ATTEMPTS: usize = 3;
 const POLL_SECS: u64 = 60;
 const CANDIDATES_PER_WAKE: usize = 16;
-const GLOBAL_REQUEST_BYTES: usize = 512 * 1024;
+const GLOBAL_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 
 fn request_bytes() -> &'static tokio::sync::Semaphore {
     static BYTES: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
@@ -37,7 +37,7 @@ fn request_slots() -> &'static tokio::sync::Semaphore {
     })
 }
 
-const GLOBAL_INPUT_TOKENS_PER_SECOND: u64 = 96 * 1024;
+const GLOBAL_INPUT_TOKENS_PER_SECOND: u64 = 100_000;
 
 struct TokenStart {
     reservation_id: String,
@@ -58,24 +58,30 @@ impl ProviderPacing {
         }
     }
 
-    fn admit(&mut self, reservation_id: &str, now: tokio::time::Instant) -> bool {
+    fn admit(
+        &mut self,
+        reservation_id: &str,
+        estimated_tokens: u64,
+        now: tokio::time::Instant,
+    ) -> bool {
         while self.starts.front().is_some_and(|start| {
             now.saturating_duration_since(start.started) >= Duration::from_secs(1)
         }) {
             self.starts.pop_front();
         }
         let tokens = self.starts.iter().map(|start| start.tokens).sum::<u64>();
+        let estimated_tokens = estimated_tokens.clamp(1, MAX_REQUEST_TOKENS);
         if now < self.next_start
-            || tokens.saturating_add(MAX_REQUEST_TOKENS) > GLOBAL_INPUT_TOKENS_PER_SECOND
+            || tokens.saturating_add(estimated_tokens) > GLOBAL_INPUT_TOKENS_PER_SECOND
         {
             return false;
         }
         self.starts.push_back(TokenStart {
             reservation_id: reservation_id.to_owned(),
             started: now,
-            tokens: MAX_REQUEST_TOKENS,
+            tokens: estimated_tokens,
         });
-        self.next_start = now + Duration::from_millis(100);
+        self.next_start = now + Duration::from_millis(25);
         true
     }
 
@@ -450,13 +456,18 @@ pub(crate) async fn execute_jev_batch(
             settled: false,
             rejected: true,
         };
-        if !store
-            .track_burn_check_requests(&request_identities, &reservation_id, unix_now())
-            .map_err(|_| JevError::ProviderUnavailable)?
-        {
-            return Err(JevError::RequestOutcomeUnknown);
-        }
-        wait_for_provider(&reservation_id, handle, key_generation, events, &input.key).await?;
+        let estimated_tokens = u64::try_from(batch.serialized_bytes.div_ceil(3))
+            .unwrap_or(MAX_REQUEST_TOKENS)
+            .min(MAX_REQUEST_TOKENS);
+        wait_for_provider(
+            &reservation_id,
+            estimated_tokens,
+            handle,
+            key_generation,
+            events,
+            &input.key,
+        )
+        .await?;
         if !handle.key_is_current(key_generation)
             || session_is_active(events, &input.key)
             || !store
@@ -464,6 +475,12 @@ pub(crate) async fn execute_jev_batch(
                 .map_err(|_| JevError::ProviderUnavailable)?
         {
             return Err(JevError::Cancelled);
+        }
+        if !store
+            .track_burn_check_requests(&request_identities, &reservation_id, unix_now())
+            .map_err(|_| JevError::ProviderUnavailable)?
+        {
+            return Err(JevError::RequestOutcomeUnknown);
         }
         dispatch.rejected = false;
         let call = client.evaluate_async(&batch.request);
@@ -563,13 +580,24 @@ pub(crate) async fn execute_jev_batch(
                     retry_delay_ms = retry_delay(&error, attempt).unwrap_or_default().as_millis(),
                     elapsed_ms = started.elapsed().as_millis(),
                 );
-                store
-                    .release_rejected_burn_check_usage(&reservation_id)
-                    .map_err(|_| JevError::ProviderUnavailable)?;
-                provider_pacing()
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .settle(&reservation_id, 0);
+                if request_was_rejected(&error) {
+                    store
+                        .release_rejected_burn_check_usage(&reservation_id)
+                        .map_err(|_| JevError::ProviderUnavailable)?;
+                    provider_pacing()
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .settle(&reservation_id, 0);
+                } else {
+                    store
+                        .settle_burn_check_usage(&reservation_id, None, unix_now())
+                        .map_err(|_| JevError::ProviderUnavailable)?;
+                    if matches!(error, JevError::RequestOutcomeUnknown) {
+                        store
+                            .clear_burn_check_request_outcomes(&request_identities)
+                            .map_err(|_| JevError::ProviderUnavailable)?;
+                    }
+                }
                 dispatch.settled = true;
                 crate::jev_settings::changed(app);
                 if !wait_for_retry(
@@ -641,6 +669,7 @@ async fn wait_for_retry(
 
 async fn wait_for_provider(
     reservation_id: &str,
+    estimated_tokens: u64,
     handle: &WorkerHandle,
     generation: u64,
     events: &SessionEvents,
@@ -653,7 +682,11 @@ async fn wait_for_provider(
         let admitted = provider_pacing()
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .admit(reservation_id, tokio::time::Instant::now());
+            .admit(
+                reservation_id,
+                estimated_tokens,
+                tokio::time::Instant::now(),
+            );
         if admitted {
             return Ok(());
         }
@@ -719,6 +752,9 @@ pub(crate) fn retry_delay(error: &JevError, attempt: usize) -> Option<Duration> 
                 Some(_) => None,
                 None => Some(Duration::from_secs(1_u64 << attempt.min(3))),
             }
+        }
+        JevError::RequestOutcomeUnknown if attempt < RETRY_ATTEMPTS - 1 => {
+            Some(Duration::from_secs(1_u64 << attempt.min(3)))
         }
         _ => None,
     }
@@ -834,24 +870,38 @@ mod tests {
     fn provider_pacing_reserves_tokens_then_uses_measured_usage_and_shared_backoff() {
         let now = tokio::time::Instant::now();
         let mut pacing = ProviderPacing::new(now);
-        assert!(pacing.admit("first", now));
-        assert!(!pacing.admit("second", now + Duration::from_millis(100)));
+        assert!(pacing.admit("first", 30_000, now));
+        assert!(pacing.admit("second", 30_000, now + Duration::from_millis(100)));
+        assert!(pacing.admit("third", 30_000, now + Duration::from_millis(200)));
+        assert!(!pacing.admit("fourth", 30_000, now + Duration::from_millis(300)));
         pacing.settle("first", 10_000);
-        assert!(pacing.admit("second", now + Duration::from_millis(100)));
-        assert!(!pacing.admit("third", now + Duration::from_millis(200)));
         pacing.settle("second", 0);
-        assert!(pacing.admit("third", now + Duration::from_millis(200)));
+        pacing.settle("third", 0);
+        assert!(pacing.admit("fourth", 20_000, now + Duration::from_millis(300)));
         assert_eq!(
             pacing.starts.iter().map(|start| start.tokens).sum::<u64>(),
-            75_536
+            30_000
         );
         pacing.next_start = now + Duration::from_secs(12);
-        assert!(!pacing.admit("fourth", now + Duration::from_secs(1)));
-        assert!(pacing.admit("fourth", now + Duration::from_secs(12)));
+        assert!(!pacing.admit("fifth", 30_000, now + Duration::from_secs(1)));
+        assert!(pacing.admit("fifth", 30_000, now + Duration::from_secs(12)));
         assert_eq!(pacing.starts.len(), 1);
         println!(
-            "phase6 pacing reserved_tokens=65536 measured_first_tokens=10000 rolling_limit=98304 shared_backoff_seconds=12"
+            "provider pacing estimated request tokens allows bounded concurrency within rolling limit"
         );
+    }
+
+    #[test]
+    fn an_unknown_request_gets_two_bounded_retries() {
+        assert_eq!(
+            retry_delay(&JevError::RequestOutcomeUnknown, 0),
+            Some(Duration::from_secs(1))
+        );
+        assert_eq!(
+            retry_delay(&JevError::RequestOutcomeUnknown, 1),
+            Some(Duration::from_secs(2))
+        );
+        assert_eq!(retry_delay(&JevError::RequestOutcomeUnknown, 2), None);
     }
 
     #[test]

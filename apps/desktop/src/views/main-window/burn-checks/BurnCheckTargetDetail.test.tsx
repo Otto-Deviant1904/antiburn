@@ -113,7 +113,7 @@ describe("target cost line", () => {
 })
 
 describe("BurnCheckTargetDetail", () => {
-  it("shows missing instruction text, bounds long action text, and lets other checks reveal context", async () => {
+  it("shows missing instruction text, full bounded action text, and optional context", async () => {
     vi.mocked(getBurnCheckTargetEvidence).mockResolvedValue({
       status: "available",
       items: [
@@ -168,7 +168,7 @@ describe("BurnCheckTargetDetail", () => {
     expect(
       screen.getByText("Instruction · AGENTS.md · Testing · lines 24–27"),
     ).toBeInTheDocument()
-    expect(screen.getByText(`${"x".repeat(180)}…`)).toBeInTheDocument()
+    expect(screen.getByText("x".repeat(900))).toBeInTheDocument()
     expect(screen.queryByText("earlier event")).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Show context" }))
     expect(screen.getByText("earlier event")).toBeInTheDocument()
@@ -230,14 +230,14 @@ describe("BurnCheckTargetDetail", () => {
     expect(
       await screen.findByText("Do not use broad searches when exploring a codebase."),
     ).toBeInTheDocument()
-    expect(screen.getByText("Instruction (from line 45)")).toBeInTheDocument()
+    expect(screen.getByText("Instruction")).toBeInTheDocument()
     expect(screen.getByRole("region", { name: "Evidence" })).not.toHaveClass("border-t")
     expect(screen.getByText("rg -n 'long search string' .")).toBeInTheDocument()
     expect(screen.queryByText("Unneeded surrounding event")).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Show context" })).not.toBeInTheDocument()
   })
 
-  it("expands bounded evidence with its original whitespace and evidence source", async () => {
+  it("shows the full bounded evidence without formatting or expansion toggles", async () => {
     vi.mocked(getBurnCheckTargetEvidence).mockResolvedValue({
       status: "available",
       items: [
@@ -261,17 +261,14 @@ describe("BurnCheckTargetDetail", () => {
       />,
     )
     fireEvent.click(screen.getByRole("button", { name: "Show evidence" }))
-    await screen.findByRole("button", { name: "Show original formatting" })
-    fireEvent.click(screen.getByRole("button", { name: "Show original formatting" }))
-    fireEvent.click(screen.getByText("View full bounded evidence"))
     expect(
-      screen.getByText(
-        (_, element) =>
-          element?.tagName === "PRE" && element.textContent?.includes("\n  detail") === true,
-      ),
+      await screen.findByText(`first line ${"detail ".repeat(40)}`.trim()),
     ).toBeInTheDocument()
-    expect(screen.getByText("This is the cited action.")).toBeInTheDocument()
-    expect(screen.getByText("Source: Bash input")).toBeInTheDocument()
+    expect(screen.getByText(/Bash input · This is the cited action/)).toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: "Show original formatting" }),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByText("View full bounded evidence")).not.toBeInTheDocument()
   })
 
   it("shows the outdated-instructions note once when historical text is unconfirmed", async () => {
@@ -412,13 +409,24 @@ describe("BurnCheckTargetDetail", () => {
     fireEvent.click(screen.getByRole("button", { name: "Show evidence" }))
     view.rerender(
       <BurnCheckTargetDetail
-        target={{ ...first, findingId: "finding-replaced", actionId: "replacement" }}
+        target={{
+          ...first,
+          findingId: "finding-replaced",
+          actionId: "replacement",
+          finding: { ...first.finding, detector: "ignoredInstructions" },
+          display: { ...first.display, instructionTitle: "Quality Review" },
+        }}
         refresh={() => undefined}
       />,
     )
     fireEvent.click(screen.getByRole("button", { name: "Show evidence" }))
     expect(getBurnCheckTargetEvidence).toHaveBeenCalledTimes(2)
-    expect(await screen.findByText(/details are no longer available/)).toBeInTheDocument()
+    expect(await screen.findAllByText("Quality Review")).not.toHaveLength(0)
+    expect(screen.getByText("Where it was ignored")).toBeInTheDocument()
+    expect(screen.getByText("The Workflow tool was never invoked.")).toBeInTheDocument()
+    expect(
+      screen.getByText(/exact instruction and action text was not saved/),
+    ).toBeInTheDocument()
     await act(async () =>
       resolveOld({
         status: "available",
@@ -500,7 +508,7 @@ describe("BurnCheckTargetDetail", () => {
     ).toBeInTheDocument()
     expect(screen.getByRole("heading", { name: /Code Discovery/ })).toBeInTheDocument()
     expect(
-      screen.getByText("What happened").parentElement?.querySelector("time"),
+      screen.getByText("Where it was ignored").parentElement?.querySelector("time"),
     ).not.toBeNull()
     expect(getBurnCheckTargetEvidence).toHaveBeenCalledWith("action-fresh")
     await act(async () =>

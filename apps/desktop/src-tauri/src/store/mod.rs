@@ -74,7 +74,8 @@ use settings::read_settings;
 
 pub use burn_check::{
     BurnCheckAssessment, BurnCheckCandidate, BurnCheckFailure, BurnCheckHistoryStatus,
-    BurnCheckInput, BurnCheckReservation, BurnCheckUsageSummary, CachedAssessmentResponse,
+    BurnCheckInput, BurnCheckReservation, BurnCheckSampleOrigin, BurnCheckSampledPair,
+    BurnCheckUsageSummary, CachedAssessmentResponse,
 };
 pub use model::{
     ActiveCursor, AnalysisRecord, AppSettings, DisabledAgents, DiskSpaceDisplay, EvidenceClaim,

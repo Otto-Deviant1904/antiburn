@@ -41,13 +41,8 @@
   gap: calc(var(--space-xl) / 2);
 }
 
-.burn-checks-unassessed {
-  display: grid;
-  gap: var(--space-sm);
-}
-
-.burn-checks-unassessed + .burn-checks-group {
-  margin-block-start: var(--space-sm);
+.burn-checks-group-body[hidden] {
+  display: none;
 }
 
 .burn-checks-group-heading,

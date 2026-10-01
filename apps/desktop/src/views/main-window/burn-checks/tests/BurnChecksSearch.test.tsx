@@ -63,6 +63,46 @@ afterEach(() => {
 // one test can take five times its local run time. 15 s is the bound, not a
 // target.
 describe("BurnChecksView search", { timeout: 15_000 }, () => {
+  it("explains priority sampling on hover and keyboard focus only for sampled Ignored Instructions", async () => {
+    const check = {
+      ...report.categories[0]!,
+      id: "ignoredInstructions" as const,
+      sampled: true,
+    }
+    const first = setup(null, false, aggregate, { ...report, categories: [check] })
+    const info = await screen.findByRole("button", { name: "About priority sampling" })
+    expect(info).toBeVisible()
+    fireEvent.pointerMove(info, { pointerType: "mouse" })
+    expect(
+      await screen.findByText(/Priority sampling checks likely instruction conflicts first/),
+    ).toBeVisible()
+    fireEvent.pointerLeave(info)
+    fireEvent.focus(info)
+    expect(
+      await screen.findByText(/Later checks can reduce the remaining unassessed gap/),
+    ).toBeVisible()
+    first.view.unmount()
+
+    const second = setup(null, false, aggregate, {
+      ...report,
+      categories: [{ ...check, sampled: false }],
+    })
+    await screen.findByRole("heading", { name: "Ignored Instructions" })
+    expect(
+      screen.queryByRole("button", { name: "About priority sampling" }),
+    ).not.toBeInTheDocument()
+    second.view.unmount()
+
+    setup(null, false, aggregate, {
+      ...report,
+      categories: [{ ...report.categories[0]!, id: "ignoredInstructions" }],
+    })
+    await screen.findByRole("heading", { name: "Ignored Instructions" })
+    expect(
+      screen.queryByRole("button", { name: "About priority sampling" }),
+    ).not.toBeInTheDocument()
+  })
+
   it("opens ignored instruction evidence through the report and keeps the ordinary prompt action", async () => {
     commands.evidence.mockResolvedValue({
       status: "available",
@@ -213,6 +253,10 @@ describe("BurnChecksView search", { timeout: 15_000 }, () => {
     await screen.findByRole("button", { name: /Unused MCP servers/ })
     view.rerender(
       <BurnChecksView active session={session} focusedCheck="cacheChurn" focusRevision={1} />,
+    )
+    expect(screen.getByRole("button", { name: "Not assessed (1)" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
     )
     expect(
       screen.getByText("This check has not been assessed for the available sessions."),

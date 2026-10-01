@@ -710,6 +710,15 @@ Notes for what isn't expressible as a token:
   gaps. A text-bearing indicator shifts down 1px for optical alignment with the monospace verdict.
   Main collection rows that are not assessed form an 8px grid. When an assessed group follows,
   leave an 8px gap without a divider or top inset.
+  In the main report, show actual failures first. Keep awaiting, passed, and
+  snoozed checks in their own groups. Show all active checks without a lifecycle
+  in a neutral `Not assessed (N)` disclosure only when N is at least one. Start
+  it collapsed; search opens and focuses its target. Collapsing a focused row
+  returns focus to the disclosure. Never describe an unassessed row as failed.
+  When Ignored Instructions reports priority sampling, place a small tertiary
+  information icon next to its detail title. Its shared tooltip explains that
+  likely conflicts are checked first and later checks can reduce the remaining
+  unassessed gap. The icon is a keyboard-focusable 24px target.
   Session-card rows use a 2px interline gap inside unchanged 12px vertical card padding. A zero-failure result with at least one assessed check uses an outlined ring and tick, even
   when some checks are not assessed. Session cards keep the passing verdict visible above the title.
   Failed and non-result states keep their explicit verdict wording. Session cards use
@@ -1152,14 +1161,15 @@ The actions align with that first line and wrap without negative vertical offset
 Every finding explanation appears below the header metrics.
 All check actions sit at the header’s right edge. Named resource cards contain evidence only.
 Do not repeat explanations or check-level actions in the body.
-An Ignored Instructions finding loads bounded private evidence when its selected detail opens,
-without another disclosure. Show the instruction excerpt with file, section, and line range,
-then the cited session action with available time and tool information. Keep surrounding events
-chronological behind “Show context”. Bound long excerpts with “Show full excerpt”. State when
-instruction text is unavailable; a failed read offers Retry. Closing or changing the selected
+An Ignored Instructions finding shows the same two sections in every detail state: “Instruction”
+and “Where it was ignored”. Load bounded saved excerpts when the detail opens, without another
+disclosure. Include the instruction source and line range, plus the cited action and its available
+time. Show each complete bounded excerpt with its source and a short explanation. Keep surrounding
+events chronological behind “Show context”. Keep the finding summary visible while excerpts load
+or fail; offer Retry after a failed read. New assessments save the compared excerpts with the finding so later session changes
+do not hide the example. For older findings without saved excerpts, show the instruction location
+and action summary, then state that exact text was not saved. Closing or changing the selected
 detail discards late responses. Other session findings may load bounded evidence on demand.
-Show unavailable evidence when the source changed; do not replace it with an unrelated current
-record. Use the existing session route when exact event positioning is unavailable.
 The collection and detail panes start at the top of the workspace. The collection docks directly to
 the sidebar and uses the same `--main-window-collection-width` geometry as Sessions. Its 340px width
 does not change by breakpoint. The detail pane remains flexible, and both panes own independent scroll

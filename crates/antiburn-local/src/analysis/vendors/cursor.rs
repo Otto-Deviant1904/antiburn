@@ -348,7 +348,21 @@ fn collect_cursor_content_part(value: &Value, role: Role, parts: &mut Vec<Conten
         }
         "tool_result" | "tool-result" => {
             if let Some(content) = value.get("content") {
-                if let Some(text) = content.as_str() {
+                let text = content.as_str().map(str::to_owned).or_else(|| {
+                    content.as_array().and_then(|blocks| {
+                        blocks
+                            .iter()
+                            .map(|block| {
+                                block
+                                    .get("text")
+                                    .and_then(Value::as_str)
+                                    .or_else(|| block.get("content").and_then(Value::as_str))
+                            })
+                            .collect::<Option<Vec<_>>>()
+                            .map(|parts| parts.join("\n"))
+                    })
+                });
+                if let Some(text) = text {
                     parts.push(
                         ContentPart::new(ContentKind::ToolResult, text).with_tool_identity(
                             value
@@ -365,10 +379,6 @@ fn collect_cursor_content_part(value: &Value, role: Role, parts: &mut Vec<Conten
                                 .map(str::to_owned),
                         ),
                     );
-                } else if let Some(blocks) = content.as_array() {
-                    for block in blocks {
-                        collect_cursor_content_part(block, Role::Tool, parts);
-                    }
                 }
             }
             if value.get("content").is_none()

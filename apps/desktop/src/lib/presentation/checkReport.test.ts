@@ -187,7 +187,7 @@ describe("Checks presentation", () => {
     expect(presentation.noActiveChecks).toBe(false)
   })
 
-  it("reports no active checks when only unavailable categories remain", () => {
+  it("keeps unavailable active categories distinct from an empty report", () => {
     const presentation = checksPresentation(
       report([
         category({
@@ -202,8 +202,9 @@ describe("Checks presentation", () => {
 
     expect(presentation.activeAssessed).toEqual([])
     expect(presentation.activeUnavailable.map((item) => item.id)).toEqual(["unusedSkills"])
-    expect(presentation.noActiveChecks).toBe(true)
-    expect(checksHeroPresentation(presentation).result).toBe("No active checks")
+    expect(presentation.noActiveChecks).toBe(false)
+    expect(checksHeroPresentation(presentation).result).toBe("No checks assessed")
+    expect(checksPresentation(report([])).noActiveChecks).toBe(true)
   })
 
   it("keeps the running presentation while evidence is unsettled", () => {

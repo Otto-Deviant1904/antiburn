@@ -152,6 +152,12 @@ pub(super) struct CompactProgress {
 }
 
 impl CompactProgress {
+    pub(super) fn is_empty(&self) -> bool {
+        self.answers.iter().all(Option::is_none)
+            && self.followup_answers.iter().all(Option::is_none)
+            && self.extra_results.is_empty()
+            && self.completed_batch_ids.is_empty()
+    }
     #[cfg(test)]
     pub(super) fn from_progress<C: JevCheck>(
         check: &C,
@@ -346,13 +352,82 @@ fn restore_batch_results(
 
 #[cfg(test)]
 mod tests {
-    use super::super::{AssessmentCursor, parse_cursor, serialize_cursor};
+    use super::super::{
+        AssessmentCursor, parse_checkpoint, parse_cursor, serialize_cursor,
+        serialize_selected_cursor_progress,
+    };
     use super::*;
     use antiburn_local::analysis::jev::{
         JevCheck, JevEvidenceReference, JevEvidenceRole, JevInputWindow, JevQuestion,
         JevSessionContext,
     };
     use serde_json::json;
+
+    #[test]
+    fn page_boundary_checkpoint_restores_with_a_different_next_page_layout() {
+        let context = JevSessionContext {
+            input_revision: "page-two".to_owned(),
+            session_identity: "session".to_owned(),
+            check_context: json!(null),
+            limitations: Vec::new(),
+            evidence_store: Default::default(),
+            reference_snapshots: Vec::new(),
+        };
+        let cursor = AssessmentCursor {
+            input_revision: Some("revision".to_owned()),
+            comparison_after: Some("next-comparison".to_owned()),
+            ..Default::default()
+        };
+        let selected = crate::store::SelectedContentProgress {
+            revision: crate::store::SELECTED_CONTENT_PROGRESS_REVISION,
+            cursor: None,
+        };
+        let saved = serialize_selected_cursor_progress(
+            &cursor,
+            &cursor.progress,
+            &[],
+            &context,
+            &mut BTreeMap::new(),
+            Some(&selected),
+        )
+        .unwrap();
+        let (restored, compact, _) = parse_checkpoint(&saved).unwrap();
+        assert_eq!(
+            restored.comparison_after.as_deref(),
+            Some("next-comparison")
+        );
+        let next_items = vec![JevWorkItem {
+            id: "new-item".to_owned(),
+            window: JevInputWindow {
+                fields: json!({"new": true}),
+                evidence: Vec::new(),
+            },
+            questions: BTreeMap::from([(
+                "new-question".to_owned(),
+                JevQuestion::Noul {
+                    instructions: json!("Assess the new item"),
+                    criteria: None,
+                },
+            )]),
+        }];
+        assert!(compact.unwrap().is_empty());
+        let reset = CompactProgress::from_progress(
+            &antiburn_local::analysis::ignored_instructions::IgnoredInstructionsCheck,
+            &context,
+            &JevRunProgress::default(),
+            &next_items,
+        )
+        .unwrap();
+        assert!(
+            reset
+                .restore(
+                    &antiburn_local::analysis::ignored_instructions::IgnoredInstructionsCheck,
+                    &context,
+                    &next_items,
+                )
+                .is_ok()
+        );
+    }
 
     #[test]
     fn complete_page_checkpoint_is_small_and_restores_exact_answers_and_bindings() {

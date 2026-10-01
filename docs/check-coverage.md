@@ -136,14 +136,18 @@ in this matrix.
 The first-tier product matrix is the source of truth for reachable check
 support. Its six supported formats are `ClaudeJsonl`, `CodexRolloutJsonl`,
 `OpenCodeSqliteV2`, `PiV3Jsonl`, `CursorCliAgentJsonl`, and
-`AntigravityBrainJsonl`. Other formats are unavailable for this check. A scoped
-Passed result requires complete current evidence, every eligible rule/action
-comparison, no pending or unassessed comparison, and historically grounded
-instruction provenance. Current-file comparisons cannot establish a historical
-clean result. Auto Fix, verification, and estimates are unsupported.
-An inapplicability answer alone cannot establish a clean comparison. Independent
-relationship and evidence judgments must confirm irrelevance with sufficient
-selected evidence. Missing approvals, results, or edit bodies remain unassessed.
+`AntigravityBrainJsonl`. Other formats are unavailable for this check. Clean
+means no finding among sampled comparisons in a completed review, not that all
+session content is safe. Unsampled pairs remain a coverage gap. Observed
+current-file versions govern future actions; the first observation cannot
+prove earlier activation. An explicit history run can compare past actions to
+current files, but this does not prove historical activation. Missing recorded
+historical snapshots remain unavailable as proof.
+Provider failures and incomplete source evidence are different from sampling
+gaps and cannot produce Clean. Auto Fix, verification, and estimates are
+unsupported. A confident `not_applicable` answer can stop follow-up for that comparison.
+Other applicability answers need independent relationship and evidence
+judgments. Missing required evidence cannot establish a clean result.
 The per-field source limits and selection states are listed in
 [Smart Burn Checks selected-input coverage](smart-burn-checks.md#ignored-instructions-selected-input-coverage).
 
@@ -173,16 +177,18 @@ verification, a reachable inventory target before it accepts an M/B/K prompt,
 and production editor policy plus a typed target operation before it accepts
 Auto Fix. The limit stays beside the row it qualifies.
 
-Ignored Instructions uses stored Jev assessments and the current published
-content projection. Finding, scoped clean, and prompt support is limited to the
-six exact source formats listed below. A clean claim covers only selected
-post-enable activity and the assessed instruction snapshot. It requires complete
-source evidence, every candidate pair selected and assessed (or complete input
-with no eligible pair), no skipped rules,
-pending obligations, limits, or unresolved comparisons, and non-current-file
-instruction provenance. Current-file-only comparisons cannot establish
-historical availability and do not produce clean status. Auto Fix, verification,
-and estimates are unsupported. The check requires a user-supplied
+Ignored Instructions uses stored Jev assessments, including bounded local excerpts
+of each finding's compared instruction and action, and the current published
+content projection. Finding, sampled Clean, and prompt support are limited to
+the six exact source formats listed below. The worker records observed
+instruction versions with session positions. A changed version applies to
+future actions, while a requested history run can compare older actions to
+current rules as a possible issue. Without an authoritative snapshot this is
+not proof those rules were active then. Clean covers sampled comparisons, not
+historical activation or exhaustive session coverage. Unresolved sampled
+comparisons remain unassessed.
+Auto Fix,
+verification, and estimates are unsupported. The check requires a user-supplied
 TypeSafe API key and sends selected instruction text, assistant text excerpts,
 and selected session fields to TypeSafe: Bash command input, file-edit paths,
 read-file paths, search queries with scope filters, and other-tool input. Bash
@@ -190,12 +196,18 @@ input can include inline scripts, heredocs, and patches recorded in the command;
 dedicated edit-tool content stays excluded. A command request does not prove
 execution or success. User
 messages, edit content, read output, search output, Bash output, and other tool
-outputs are excluded. Selected paths can leave the machine. Candidate rule/action
-pairs are visited in a stable diagonal order and processed in bounded, resumable batches until all eligible
-pairs and content pages are covered. Long instruction and action text is split
-into overlapping byte ranges; every range is submitted. Lexical overlap ranks
-only earlier context for follow-up requests. A request's physical size remains
-bounded, but no cumulative request or page count excludes later work.
+outputs are excluded. Selected paths can leave the machine. Sampling selects
+up to 256 high-priority rule/action pairs per review by word rarity, tool
+name, literal path, prohibition/tool-input risk, and recency. It spreads choices
+across rules and sources and probes low-overlap pairs. These signals cannot
+prove that omitted pairs are irrelevant. New activity leads later reviews;
+then older pairs not yet sampled reduce the remaining gap, unless new work
+adds pairs. Compatible typed answers persist across append, completion, and
+restart with source-bound identities and input/revision checks. Long text is
+split into overlapping byte ranges; not every range must be sent. Request
+size remains bounded, but this is not a per-session price or time cap. About
+60 seconds after worker start for an ordinary assessment is a goal, not a
+completion deadline or guarantee.
 Requests retain the rule text, provenance, scope, candidate action, and bounded
 same-branch evidence. One event window groups up to two rule targets around a
 candidate action, so the request sends shared event text once instead of
@@ -206,10 +218,11 @@ and the selected input envelope for each recognized tool category. Edit and read
 inputs are reduced to paths; search inputs retain the query and scope filters.
 Malformed known tools and tools without a name do not fall through to other-tool
 input. Bash envelopes retain recorded execution context; search constraints
-reject arbitrary nested objects. Both patch rename paths remain selected, while
-dedicated edit content remains excluded. Selected actions retain no excluded
-normalized-field values. Native cross-agent fixtures and the 4,096-mask
-projection test cover this boundary. Tool lifecycle requests do not prove
+reject arbitrary nested objects. Recorded `patchText` in an OpenCode
+`apply_patch` request supplies paths and operations when valid. Both patch
+rename paths remain selected, while dedicated edit content remains excluded.
+Selected actions retain no excluded normalized-field values. Native cross-agent
+fixtures and the 4,096-mask projection test cover this boundary. Tool lifecycle requests do not prove
 successful execution. OpenCode SQLite retains native lifecycle labels, but
 other source lifecycle states and unresolved path semantics remain unknown. The
 shared evidence module also supports output-enabled checks.
@@ -266,7 +279,8 @@ It adds matching earlier events from each older page and assesses the candidate
 again. The worker clears an earlier unassessed result only after the new page
 covers that candidate. Missing pages never prove that an approval or
 prerequisite did not happen.
-New activity is assessed after three minutes of inactivity. Settings can also
+New activity is assessed after three minutes of inactivity. Appended new actions
+enter review even when compatible old judgments are reused. Settings can also
 queue sessions active in the selected 7-day or 30-day window. Historical runs
 freeze a cohort for Settings progress. Unchanged completed sessions are not
 requeued by another click; due failures, changed activity, or a new evaluator
@@ -275,12 +289,12 @@ limits; they do not establish complete history outside the selected window.
 
 | Agent       | Check | Finding | Prompt | Auto Fix | Verification | Estimate | Reachability limit                                                                                                                           |
 | ----------- | ----- | ------- | ------ | -------- | ------------ | -------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| Claude Code | I     | Y       | Y      | N        | N            | N        | `ClaudeJsonl` only; clean is scoped to complete current evidence and historically grounded instructions.                                     |
-| Codex       | I     | Y       | Y      | N        | N            | N        | `CodexRolloutJsonl` only; clean is scoped to complete current evidence and historically grounded instructions.                               |
-| OpenCode    | I     | Y       | Y      | N        | N            | N        | `OpenCodeSqliteV2` only; JSONL export is not enabled; clean needs complete evidence and historical instruction provenance.                    |
-| Pi          | I     | Y       | Y      | N        | N            | N        | `PiV3Jsonl` only; clean is scoped to complete current evidence and historically grounded instructions.                                       |
-| Cursor      | I     | Y       | Y      | N        | N            | N        | `CursorCliAgentJsonl` only; other Cursor formats are not enabled; clean needs complete evidence and historical instruction provenance.        |
-| Antigravity | I     | Y       | Y      | N        | N            | N        | `AntigravityBrainJsonl` only; clean needs complete retained evidence and historically grounded instructions.                                  |
+| Claude Code | I     | Y       | Y      | N        | N            | N        | `ClaudeJsonl` only; Clean covers sampled post-observation comparisons, not all activity.                                                    |
+| Codex       | I     | Y       | Y      | N        | N            | N        | `CodexRolloutJsonl` only; Clean covers sampled post-observation comparisons.                                                                 |
+| OpenCode    | I     | Y       | Y      | N        | N            | N        | `OpenCodeSqliteV2` only; JSONL export is not enabled; Clean covers sampled post-observation comparisons.                                    |
+| Pi          | I     | Y       | Y      | N        | N            | N        | `PiV3Jsonl` only; Clean covers sampled post-observation comparisons.                                                                         |
+| Cursor      | I     | Y       | Y      | N        | N            | N        | `CursorCliAgentJsonl` only; other Cursor formats are not enabled; Clean covers sampled post-observation comparisons.                        |
+| Antigravity | I     | Y       | Y      | N        | N            | N        | `AntigravityBrainJsonl` only; Clean covers sampled post-observation comparisons.                                                              |
 | Claude Code | D     | Y       | Y      | Y        | N            | Y        | Auto Fix needs one supported current compaction control.                                                                                     |
 | Claude Code | T     | Y       | Y      | Y        | Y            | Y        | Verification needs a later complete lower control on the same route and model.                                                               |
 | Claude Code | S     | Y       | Y      | Y        | N            | Y        | Auto Fix needs one exact named agent definition.                                                                                             |

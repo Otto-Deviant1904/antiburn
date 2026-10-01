@@ -43,11 +43,12 @@ use crate::analysis::jev::{
 };
 
 pub const ASSESSMENT_MODEL: &str = crate::analysis::jev::PINNED_MODEL;
-pub const ASSESSMENT_PROJECTION_REVISION: u32 = 4;
-pub const ASSESSMENT_CHUNKING_REVISION: u32 = 18;
-pub const ASSESSMENT_QUESTION_REVISION: u32 = 37;
-pub const ASSESSMENT_REDUCER_REVISION: u32 = 25;
+pub const ASSESSMENT_PROJECTION_REVISION: u32 = 7;
+pub const ASSESSMENT_CHUNKING_REVISION: u32 = 20;
+pub const ASSESSMENT_QUESTION_REVISION: u32 = 38;
+pub const ASSESSMENT_REDUCER_REVISION: u32 = 27;
 pub const MAX_ASSESSMENT_CANDIDATES: usize = 256;
+pub const MAX_SAMPLED_COMPARISONS_PER_PASS: usize = 1024;
 pub const INPUT_SELECTION: JevInputSelection = JevInputSelection::from_fields(&[
     JevInputField::AssistantMessage,
     JevInputField::BashCommandInput,
@@ -99,6 +100,7 @@ pub struct AssessmentInput {
     pub source_generation: i64,
     pub source_fingerprint: Option<String>,
     pub incarnation: u64,
+    /// Cursor for the next comparison page in the same sampling pass.
     #[serde(default)]
     pub comparison_after: Option<String>,
 }
@@ -158,12 +160,19 @@ pub struct CandidateComparison {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AssessmentCoverage {
     pub eligible_rules: usize,
+    /// Possible rule-range by action-range pairs before local sampling.
     pub candidate_pairs: usize,
     pub selected_comparisons: usize,
+    /// Possible pairs not yet sampled, including pairs beyond this pass.
     pub unselected_pairs: usize,
     pub skipped_rules: Vec<String>,
     pub skipped_actions: Vec<String>,
     pub processing_limit_reached: bool,
+    /// True when the selected pass is complete but did not inspect every possible pair.
+    #[serde(default)]
+    pub sampled_pass: bool,
+    #[serde(default)]
+    pub selector_revision: u32,
     pub limitations: Vec<String>,
     #[serde(skip)]
     pub reassessed_comparison_ids: Vec<String>,
@@ -246,6 +255,14 @@ pub enum FindingCertainty {
 pub struct AssessmentFinding {
     pub id: String,
     pub reference: RuleActionRef,
+    #[serde(default)]
+    pub instruction_excerpt: String,
+    #[serde(default)]
+    pub instruction_excerpt_truncated: bool,
+    #[serde(default)]
+    pub action_excerpt: String,
+    #[serde(default)]
+    pub action_excerpt_truncated: bool,
     pub nearby_context_ids: Vec<String>,
     pub counterevidence_ids: Vec<String>,
     pub certainty: FindingCertainty,
@@ -436,7 +453,28 @@ impl JevCheck for IgnoredInstructionsCheck {
                     })
                 })
                 .ok_or(JevError::InvalidCheckPlan)?;
-            if selected(initial, id).is_none() {
+            let applicability = selected(initial, id);
+            let literal_report_needed = work_item.window.fields["candidate_action"]["kind"]
+                == "assistant_text"
+                && work_item.window.fields["instruction_targets"][target_index]["literal_policies"]
+                    .as_array()
+                    .is_some_and(|bindings| {
+                        bindings.iter().any(|binding| {
+                            matches!(
+                                binding["policy"].as_str(),
+                                Some("construct_ban" | "command_ban")
+                            )
+                        })
+                    });
+            if applicability.is_none()
+                || (applicability.as_deref() == Some("not_applicable")
+                    && !literal_report_needed
+                    && crate::analysis::jev::classification::confident_choice(
+                        initial,
+                        id,
+                        LIKELY_THRESHOLD,
+                    ) == Some("not_applicable"))
+            {
                 continue;
             }
             questions.extend(
@@ -647,7 +685,7 @@ mod tests {
         use crate::analysis::jev::{JevResponse, JevRunProgress, run_jev_check};
 
         for (applicability, expected_requests, expected_findings, expected_unassessed) in [
-            ("not_applicable", 3, 0, 1),
+            ("not_applicable", 2, 0, 0),
             ("applies", 3, 1, 0),
             ("uncertain", 3, 0, 1),
         ] {
@@ -813,6 +851,317 @@ mod tests {
     }
 
     #[test]
+    fn heldout_selector_recall_uses_semantic_rules() {
+        #[derive(Deserialize)]
+        struct Case {
+            rule: String,
+            actions: Vec<String>,
+            expected: String,
+        }
+        let cases: Vec<Case> = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/ignored_instructions/selector_heldout.json"
+        ))
+        .unwrap();
+        for case in cases {
+            let mut actions = (0..300)
+                .map(|index| {
+                    event(
+                        &format!("filler-{index}"),
+                        index,
+                        "assistant",
+                        "main",
+                        "Reviewed an unrelated detail.",
+                    )
+                })
+                .collect::<Vec<_>>();
+            actions.extend(case.actions.iter().enumerate().map(|(index, text)| {
+                event(
+                    &format!("heldout-{index}"),
+                    (index + 300) as i64,
+                    "assistant",
+                    "main",
+                    text,
+                )
+            }));
+            let expected = case
+                .actions
+                .iter()
+                .position(|text| text == &case.expected)
+                .unwrap();
+            let plan = build_assessment_plan(input(actions, &case.rule));
+            assert!(
+                plan.comparisons
+                    .iter()
+                    .any(|comparison| comparison.reference.action_id
+                        == format!("heldout-{expected}")),
+                "{}",
+                case.rule
+            );
+            assert!(plan.coverage.sampled_pass);
+        }
+    }
+
+    #[test]
+    fn appended_relevant_action_enters_the_next_sample() {
+        let mut assessment_input = input(
+            (0..300)
+                .map(|index| {
+                    event(
+                        &format!("action-{index}"),
+                        index,
+                        "assistant",
+                        "main",
+                        "Reviewed release documentation.",
+                    )
+                })
+                .collect(),
+            "Run tests before publishing the release.",
+        );
+        let first = build_assessment_plan(assessment_input.clone());
+        assessment_input.content.actions.push(event(
+            "new-publication",
+            300,
+            "assistant",
+            "main",
+            "Published the release without running tests.",
+        ));
+        assessment_input.content.selected_input_digest = "new-selected-input".to_owned();
+        let second = build_assessment_plan(assessment_input.clone());
+        assert!(
+            second
+                .comparisons
+                .iter()
+                .any(|comparison| comparison.reference.action_id == "new-publication")
+        );
+        assert_ne!(first.input_revision, second.input_revision);
+        assert_eq!(
+            second
+                .comparisons
+                .iter()
+                .map(|comparison| &comparison.id)
+                .collect::<Vec<_>>(),
+            build_assessment_plan(assessment_input)
+                .comparisons
+                .iter()
+                .map(|comparison| &comparison.id)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn sampling_pages_and_reviews_advance_without_repeating_comparisons() {
+        let mut source = input(
+            (0..300)
+                .map(|index| {
+                    event(
+                        &format!("action-{index}"),
+                        index,
+                        "assistant",
+                        "main",
+                        "Updated release notes.",
+                    )
+                })
+                .collect(),
+            &(0..8)
+                .map(|index| format!("- Review release step {index} before publishing."))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        let mut ledger = super::super::planning::SamplingLedger::default();
+        let mut seen = BTreeSet::new();
+        for pass in 0..3 {
+            source.comparison_after = None;
+            let mut pass_count = 0;
+            loop {
+                let plan = super::super::planning::build_assessment_plan_with_sampling(
+                    source.clone(),
+                    &ledger,
+                );
+                assert_eq!(plan.coverage.candidate_pairs, 2400);
+                assert!(plan.comparisons.len() <= MAX_ASSESSMENT_CANDIDATES);
+                for comparison in &plan.comparisons {
+                    assert!(seen.insert(comparison.id.clone()));
+                    pass_count += 1;
+                }
+                source.comparison_after = plan.next_comparison_cursor;
+                if source.comparison_after.is_none() {
+                    break;
+                }
+            }
+            assert_eq!(pass_count, if pass < 2 { 1024 } else { 352 });
+            ledger.comparison_ids = seen.clone();
+        }
+        let empty = super::super::planning::build_assessment_plan_with_sampling(source, &ledger);
+        assert!(empty.comparisons.is_empty());
+        assert_eq!(empty.coverage.unselected_pairs, 0);
+    }
+
+    #[test]
+    fn new_actions_precede_old_unsampled_pairs() {
+        let mut source = input(
+            (0..1200)
+                .map(|index| {
+                    event(
+                        &format!("old-{index}"),
+                        index,
+                        "assistant",
+                        "main",
+                        "Ran release tests.",
+                    )
+                })
+                .collect(),
+            "Run release tests before publishing.",
+        );
+        let first = build_assessment_plan(source.clone());
+        let mut ledger = super::super::planning::SamplingLedger {
+            comparison_ids: first
+                .comparisons
+                .iter()
+                .map(|comparison| comparison.id.clone())
+                .collect(),
+            known_action_ids: source
+                .content
+                .actions
+                .iter()
+                .map(|action| action.reference.id.clone())
+                .collect(),
+        };
+        source.content.actions.push(event(
+            "new-action",
+            1200,
+            "assistant",
+            "main",
+            "Published without release tests.",
+        ));
+        let next = super::super::planning::build_assessment_plan_with_sampling(source, &ledger);
+        assert_eq!(next.comparisons[0].reference.action_id, "new-action");
+        assert!(
+            next.comparisons
+                .iter()
+                .all(|comparison| !ledger.comparison_ids.contains(&comparison.id))
+        );
+        ledger.comparison_ids.extend(
+            next.comparisons
+                .iter()
+                .map(|comparison| comparison.id.clone()),
+        );
+    }
+
+    #[test]
+    fn high_priority_action_enters_the_first_page_before_backlog() {
+        let mut actions = (0..1500)
+            .map(|index| {
+                event(
+                    &format!("filler-{index}"),
+                    index,
+                    "assistant",
+                    "main",
+                    "Updated an unrelated note.",
+                )
+            })
+            .collect::<Vec<_>>();
+        actions.push(event(
+            "matching",
+            1500,
+            "assistant",
+            "main",
+            "Published release without running required tests.",
+        ));
+        let plan = build_assessment_plan(input(
+            actions,
+            "Run required tests before publishing release.",
+        ));
+        assert_eq!(plan.comparisons.len(), MAX_ASSESSMENT_CANDIDATES);
+        assert_eq!(plan.comparisons[0].reference.action_id, "matching");
+        assert_eq!(
+            plan.coverage.unselected_pairs,
+            1501 - MAX_ASSESSMENT_CANDIDATES
+        );
+    }
+
+    #[test]
+    fn reducer_keeps_sampled_coverage_after_selected_work_completes() {
+        let assessment_input = input(
+            (0..300)
+                .map(|index| {
+                    event(
+                        &format!("action-{index}"),
+                        index,
+                        "assistant",
+                        "main",
+                        "Reviewed release documentation.",
+                    )
+                })
+                .collect(),
+            "Run tests before publishing the release.",
+        );
+        let plan = build_assessment_plan(assessment_input);
+        let result = reduce_assessment(&plan, &BTreeMap::new(), true);
+        assert!(result.coverage.sampled_pass);
+        assert_eq!(
+            result.coverage.selector_revision,
+            plan.coverage.selector_revision
+        );
+        assert_eq!(
+            result.coverage.unselected_pairs,
+            300 - MAX_ASSESSMENT_CANDIDATES
+        );
+        assert!(!result.coverage.processing_limit_reached);
+        assert!(
+            result
+                .coverage
+                .limitations
+                .contains(&"sampled_candidate_selection".to_owned())
+        );
+    }
+
+    #[test]
+    #[ignore = "offline 57-rule, 7000-action planning benchmark"]
+    fn semantic_selector_benchmark() {
+        let actions = (0..7000)
+            .map(|index| {
+                event(
+                    &format!("action-{index}"),
+                    index,
+                    "assistant",
+                    &format!("branch-{}", index % 20),
+                    &format!(
+                        "Changed module {} and ran tests for release {}.",
+                        index % 57,
+                        index % 11
+                    ),
+                )
+            })
+            .collect();
+        let rules = (0..57).map(|index| format!("- Check module {index} before publishing a release and request approval for changes.")).collect::<Vec<_>>().join("\n");
+        let started = std::time::Instant::now();
+        let mut source = input(actions, &rules);
+        let mut selected = BTreeSet::new();
+        let mut pages = 0;
+        loop {
+            let plan = build_assessment_plan(source.clone());
+            assert_eq!(plan.coverage.candidate_pairs, 57 * 7000);
+            selected.extend(
+                plan.comparisons
+                    .iter()
+                    .map(|comparison| comparison.id.clone()),
+            );
+            pages += 1;
+            source.comparison_after = plan.next_comparison_cursor;
+            if source.comparison_after.is_none() {
+                break;
+            }
+        }
+        assert_eq!(selected.len(), MAX_SAMPLED_COMPARISONS_PER_PASS);
+        assert_eq!(pages, 4);
+        eprintln!(
+            "sampling 57x7000: {:?}, selected={}, pages={pages}",
+            started.elapsed(),
+            selected.len()
+        );
+    }
+
+    #[test]
     fn unevaluable_requirement_stays_visible_as_skipped_coverage() {
         let mut assessment_input = input(Vec::new(), "Never run the release command.");
         let instruction = &mut assessment_input.content.instructions[0];
@@ -834,6 +1183,21 @@ mod tests {
         );
         assert_eq!(plan.coverage.candidate_pairs, 0);
         assert!(plan.comparisons.is_empty());
+    }
+
+    #[test]
+    fn empty_selected_action_is_an_explicit_coverage_gap() {
+        let plan = build_assessment_plan(input(
+            vec![event("empty-reply", 10, "assistant", "main", "")],
+            "Include the required word in every response.",
+        ));
+        assert!(plan.comparisons.is_empty());
+        assert_eq!(plan.coverage.skipped_actions, ["empty-reply"]);
+        assert!(
+            plan.coverage
+                .limitations
+                .contains(&"empty_selected_action_content".to_owned())
+        );
     }
 
     #[test]
@@ -923,6 +1287,138 @@ mod tests {
             1
         );
         assert!(!batch.request.state.to_string().contains("one-action"));
+    }
+
+    #[test]
+    fn confident_negative_target_does_not_request_followup_for_another_target() {
+        let context = build_jev_context(&input(
+            vec![event(
+                "action",
+                10,
+                "assistant",
+                "main",
+                "Updated the release notes.",
+            )],
+            "- Include a release note.\n- Run tests before publishing.",
+        ))
+        .unwrap();
+        let plan = IgnoredInstructionsCheck.prepare(&context).unwrap();
+        let item = &plan.work_items[0];
+        assert_eq!(item.questions.len(), 2);
+        let mut initial = applicable_result(item);
+        let negative = item.questions.keys().next().unwrap();
+        initial.answers.insert(
+            negative.clone(),
+            JevAnswer::Choice {
+                choice: "not_applicable".to_owned(),
+                probabilities: BTreeMap::from([
+                    ("not_applicable".to_owned(), 0.97),
+                    ("applies".to_owned(), 0.02),
+                    ("uncertain".to_owned(), 0.01),
+                ]),
+                confidence: 0.95,
+            },
+        );
+        let followup = IgnoredInstructionsCheck
+            .reconcile(item, &initial, &context)
+            .unwrap()
+            .unwrap();
+        assert_eq!(followup.questions.len(), 3);
+        assert!(
+            followup
+                .questions
+                .keys()
+                .all(|key| !key.starts_with(negative.split_once("::").unwrap().0))
+        );
+    }
+
+    #[test]
+    fn negative_applicability_still_checks_an_exact_banned_construct_report() {
+        let context = build_jev_context(&input(
+            vec![event(
+                "report",
+                10,
+                "assistant",
+                "main",
+                "I added useEffect.",
+            )],
+            "Never add `useEffect`.",
+        ))
+        .unwrap();
+        let plan = IgnoredInstructionsCheck.prepare(&context).unwrap();
+        let mut item = plan.work_items[0].clone();
+        item.window.fields["instruction_targets"][0]["literal_policies"] =
+            json!([{"policy":"construct_ban","identifier":"useEffect"}]);
+        let mut initial = applicable_result(&item);
+        let key = item.questions.keys().next().unwrap().clone();
+        initial.answers.insert(
+            key,
+            JevAnswer::Choice {
+                choice: "not_applicable".to_owned(),
+                probabilities: BTreeMap::from([
+                    ("not_applicable".to_owned(), 0.97),
+                    ("applies".to_owned(), 0.02),
+                    ("uncertain".to_owned(), 0.01),
+                ]),
+                confidence: 0.95,
+            },
+        );
+        let followup = IgnoredInstructionsCheck
+            .reconcile(&item, &initial, &context)
+            .unwrap()
+            .unwrap();
+        assert!(
+            followup
+                .questions
+                .keys()
+                .any(|key| key.ends_with("::literal_report_0"))
+        );
+    }
+
+    #[test]
+    fn synthetic_negative_page_avoids_all_768_followup_questions() {
+        let actions = (0..12)
+            .map(|index| {
+                event(
+                    &format!("action-{index}"),
+                    index,
+                    "assistant",
+                    "main",
+                    "Reviewed an unrelated note.",
+                )
+            })
+            .collect();
+        let rules = (0..57)
+            .map(|index| format!("- Follow procedure {index} for a release."))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let context = build_jev_context(&input(actions, &rules)).unwrap();
+        let plan = IgnoredInstructionsCheck.prepare(&context).unwrap();
+        assert_eq!(plan.prepared.coverage.candidate_pairs, 57 * 12);
+        assert_eq!(plan.prepared.comparisons.len(), MAX_ASSESSMENT_CANDIDATES);
+        let mut initial_questions = 0;
+        let mut followup_questions = 0;
+        for item in &plan.work_items {
+            let mut initial = applicable_result(item);
+            for answer in initial.answers.values_mut() {
+                *answer = JevAnswer::Choice {
+                    choice: "not_applicable".to_owned(),
+                    probabilities: BTreeMap::from([
+                        ("not_applicable".to_owned(), 0.97),
+                        ("applies".to_owned(), 0.02),
+                        ("uncertain".to_owned(), 0.01),
+                    ]),
+                    confidence: 0.95,
+                };
+            }
+            initial_questions += item.questions.len();
+            followup_questions += IgnoredInstructionsCheck
+                .reconcile(item, &initial, &context)
+                .unwrap()
+                .map_or(0, |item| item.questions.len());
+        }
+        assert_eq!(initial_questions, 256);
+        assert_eq!(followup_questions, 0);
     }
 
     #[test]
@@ -1144,7 +1640,7 @@ mod tests {
         assert_eq!(selected_targets, MAX_ASSESSMENT_CANDIDATES);
         assert_eq!(plan.coverage.selected_items, plan.work_items.len());
         assert!(plan.work_items.len() < selected_targets);
-        assert!(plan.coverage.processing_limit_reached);
+        assert!(plan.prepared.coverage.sampled_pass);
         assert_eq!(request_count, selected_targets);
         let packed = crate::analysis::jev::pack_work_items(&plan.work_items);
         assert!(packed.skipped_item_ids.is_empty());
@@ -1163,55 +1659,189 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "session-sized planning and packing stress test"]
-    fn session_sized_plan_pages_cover_each_rule_action_pair_once() {
-        let actions = (0..170)
-            .map(|index| {
-                event(
-                    &format!("action-{index}"),
-                    index,
+    fn tool_name_scores_actions_without_excluding_other_families() {
+        let mut actions = ["Read", "Edit", "Bash", "Search"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, name)| {
+                let mut action = event(
+                    &format!("tool-{index}"),
+                    index as i64,
                     "assistant",
                     "main",
-                    &format!("Reviewed item {index}."),
-                )
+                    "{} ",
+                );
+                action.kind = "tool_input".to_owned();
+                action.tool_name = Some(name.to_owned());
+                action
             })
-            .collect();
-        let rules = (0..57)
-            .map(|index| format!("- Save item {index} before closing it."))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let mut assessment_input = input(actions, &rules);
-        let mut seen = BTreeSet::new();
-        let mut pages = 0;
-        let mut requests = 0;
-        loop {
-            let context = build_jev_context(&assessment_input).unwrap();
-            let plan = IgnoredInstructionsCheck.prepare(&context).unwrap();
-            let details = &plan.prepared;
-            assert_eq!(details.coverage.candidate_pairs, 57 * 170);
-            for comparison in &details.comparisons {
-                assert!(seen.insert((
-                    comparison.reference.rule_id.clone(),
-                    comparison.reference.action_id.clone()
-                )));
-            }
-            let packed = crate::analysis::jev::pack_work_items(&plan.work_items);
-            assert!(packed.skipped_item_ids.is_empty());
-            assert!(packed.batches.iter().all(|batch| {
-                batch.serialized_bytes <= crate::analysis::jev::MAX_REQUEST_BYTES
-                    && batch.request.questions.len()
-                        <= crate::analysis::jev::MAX_QUESTIONS_PER_REQUEST
-            }));
-            requests += packed.batches.len();
-            pages += 1;
-            assessment_input.comparison_after = details.next_comparison_cursor.clone();
-            if assessment_input.comparison_after.is_none() {
-                break;
-            }
+            .collect::<Vec<_>>();
+        actions.push(event("report", 5, "assistant", "main", "I called Read."));
+        let mut unknown = actions[1].clone();
+        unknown.reference.id = "unknown".to_owned();
+        unknown.reference.stable = false;
+        actions.push(unknown);
+        let mut truncated = actions[2].clone();
+        truncated.reference.id = "truncated".to_owned();
+        truncated.truncated = true;
+        actions.push(truncated);
+        let plan =
+            build_assessment_plan(input(actions.clone(), "Do not call the tool named `Read`."));
+        let ids = plan
+            .comparisons
+            .iter()
+            .map(|comparison| comparison.reference.action_id.as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(ids.contains("tool-0"));
+        assert!(ids.contains("report"));
+        assert_eq!(plan.coverage.candidate_pairs, actions.len());
+        assert_eq!(plan.coverage.unselected_pairs, 0);
+        let variant = build_assessment_plan(input(actions.clone(), "Do not call the `Read` tool."));
+        assert_eq!(variant.coverage.candidate_pairs, actions.len());
+        for rule in [
+            "Do not call the tool named `Read` when editing.",
+            "Do not call the tool named `Read` or `Edit`.",
+        ] {
+            let fallback = build_assessment_plan(input(actions.clone(), rule));
+            assert_eq!(fallback.coverage.candidate_pairs, actions.len());
         }
-        assert_eq!(seen.len(), 57 * 170);
-        assert_eq!(pages, 38);
-        assert!(requests > 100);
+    }
+
+    #[test]
+    fn mixed_tool_names_are_sampled_in_one_pass() {
+        let actions = (0..300)
+            .map(|index| {
+                let mut action =
+                    event(&format!("action-{index}"), index, "assistant", "main", "{}");
+                action.kind = "tool_input".to_owned();
+                action.tool_name = Some(if index % 3 == 0 { "Read" } else { "Edit" }.to_owned());
+                if index % 17 == 0 {
+                    action.reference.stable = false;
+                }
+                action
+            })
+            .collect::<Vec<_>>();
+        let rules = "- Do not call the tool named `Read`.\n- Do not call the tool named `Edit`.\n- Follow the review procedure.";
+        let plan = build_assessment_plan(input(actions, rules));
+        assert_eq!(plan.coverage.candidate_pairs, 900);
+        assert_eq!(plan.comparisons.len(), MAX_ASSESSMENT_CANDIDATES);
+        assert!(plan.coverage.sampled_pass);
+        assert_eq!(plan.next_comparison_cursor.as_deref(), Some("sample:256"));
+        assert!(
+            plan.comparisons
+                .iter()
+                .any(|comparison| comparison.rule_text.contains("Read")
+                    && comparison.action.tool_name.as_deref() == Some("Read"))
+        );
+    }
+
+    #[test]
+    fn conditional_tool_rules_keep_all_actions_eligible() {
+        let mut edit = event("edit", 1, "assistant", "main", "{} ");
+        edit.kind = "tool_input".to_owned();
+        edit.tool_name = Some("Edit".to_owned());
+        let mut read = edit.clone();
+        read.reference.id = "read".to_owned();
+        read.tool_name = Some("Read".to_owned());
+        let mut incomplete = edit.clone();
+        incomplete.reference.id = "incomplete".to_owned();
+        incomplete.truncated = true;
+        let report = event("report", 2, "assistant", "main", "I invoked Edit.");
+        let actions = vec![edit, read, incomplete, report];
+        for rule in [
+            "Do not call the `Edit` tool.",
+            "Never invoke the tool named `Edit`.",
+        ] {
+            let plan = build_assessment_plan(input(actions.clone(), rule));
+            let ids = plan
+                .comparisons
+                .iter()
+                .map(|c| c.reference.action_id.as_str())
+                .collect::<BTreeSet<_>>();
+            assert_eq!(
+                ids,
+                BTreeSet::from(["edit", "incomplete", "read", "report"])
+            );
+        }
+        for rule in [
+            "Do not call the `Edit` tool when saving.",
+            "Do not call the `Edit` tool or `Read`.",
+            "Never invoke the tool named `Edit` unless approved.",
+        ] {
+            assert_eq!(
+                build_assessment_plan(input(actions.clone(), rule))
+                    .coverage
+                    .candidate_pairs,
+                4
+            );
+        }
+    }
+
+    #[test]
+    fn typed_edit_paths_score_without_exclusion() {
+        use crate::analysis::jev::{JevInputField, JevNormalizedFields};
+        let mut actions = Vec::new();
+        for (index, paths) in [
+            r#"{"paths":["src/other.rs"]}"#,
+            r#"{"paths":["src/target.rs","src/other.rs"]}"#,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut action = event(
+                &format!("edit-{index}"),
+                index as i64,
+                "assistant",
+                "main",
+                "{} ",
+            );
+            action.kind = "tool_input".to_owned();
+            action.tool_name = Some("apply_patch".to_owned());
+            action.normalized_fields = Some(JevNormalizedFields {
+                category: None,
+                values: BTreeMap::from([(JevInputField::FileEditPath, paths.to_owned())]),
+                malformed: false,
+            });
+            actions.push(action);
+        }
+        let mut malformed = actions[0].clone();
+        malformed.reference.id = "malformed".to_owned();
+        malformed.normalized_fields.as_mut().unwrap().malformed = true;
+        actions.push(malformed);
+        let mut unnamed = actions[0].clone();
+        unnamed.reference.id = "unnamed".to_owned();
+        unnamed.tool_name = None;
+        actions.push(unnamed);
+        actions.push(event(
+            "report",
+            3,
+            "assistant",
+            "main",
+            "I edited src/target.rs.",
+        ));
+        let plan = build_assessment_plan(input(
+            actions.clone(),
+            "Do not request an edit to the literal path `src/target.rs`.",
+        ));
+        assert_eq!(plan.coverage.candidate_pairs, 5);
+        let position = |id| {
+            plan.comparisons
+                .iter()
+                .position(|comparison| comparison.reference.action_id == id)
+                .unwrap()
+        };
+        assert!(position("edit-1") < position("edit-0"));
+        for rule in [
+            "Do not edit `src/target.rs`.",
+            "Do not request an edit to the literal path `src/target.rs` when publishing.",
+        ] {
+            assert_eq!(
+                build_assessment_plan(input(actions.clone(), rule))
+                    .coverage
+                    .candidate_pairs,
+                5
+            );
+        }
     }
 
     #[test]
@@ -1247,7 +1877,7 @@ mod tests {
     }
 
     #[test]
-    fn capped_comparisons_continue_to_later_actions() {
+    fn capped_comparisons_prioritize_later_actions() {
         let actions: Vec<_> = (0..MAX_ASSESSMENT_CANDIDATES + 5)
             .map(|index| {
                 event(
@@ -1260,18 +1890,24 @@ mod tests {
             })
             .collect();
         let plan = build_assessment_plan(input(actions.clone(), "Never run the release command."));
-        assert!(plan.coverage.processing_limit_reached);
+        assert!(plan.coverage.sampled_pass);
         assert_eq!(plan.comparisons.len(), MAX_ASSESSMENT_CANDIDATES);
-        assert_eq!(plan.comparisons[0].reference.action_id, "action-0");
+        assert!(
+            plan.comparisons
+                .iter()
+                .any(|comparison| comparison.reference.action_id
+                    == format!("action-{}", MAX_ASSESSMENT_CANDIDATES + 4))
+        );
         let mut next = input(actions, "Never run the release command.");
         next.comparison_after = plan.next_comparison_cursor;
         let next = build_assessment_plan(next);
         assert_eq!(next.comparisons.len(), 5);
         assert!(!next.coverage.processing_limit_reached);
-        assert_eq!(
-            next.comparisons[0].reference.action_id,
-            format!("action-{MAX_ASSESSMENT_CANDIDATES}")
-        );
+        assert!(next.comparisons.iter().all(|comparison| {
+            plan.comparisons
+                .iter()
+                .all(|first| first.id != comparison.id)
+        }));
     }
 
     #[test]
@@ -1315,7 +1951,7 @@ mod tests {
         assert_eq!(plan.comparisons.len(), MAX_ASSESSMENT_CANDIDATES);
         assert!(rules.len() > 1);
         assert!(actions.len() > 1);
-        assert!(plan.coverage.processing_limit_reached);
+        assert!(plan.coverage.sampled_pass);
         assert_eq!(plan.coverage.candidate_pairs, 8 * 48);
         assert!(plan.coverage.unselected_pairs > 0);
     }
@@ -1412,7 +2048,7 @@ mod tests {
 
         let plan = build_assessment_plan(assessment_input.clone());
 
-        assert!(plan.coverage.processing_limit_reached);
+        assert!(plan.coverage.sampled_pass);
         assert!(plan.comparisons.iter().any(|comparison| {
             comparison.reference.source == "home:.config/opencode/AGENTS.md"
         }));
@@ -1428,29 +2064,17 @@ mod tests {
                 .iter()
                 .all(|source| source.selected_comparisons > 0)
         );
-        let mut paged_input = assessment_input;
-        let mut selected_by_source = BTreeMap::<String, usize>::new();
-        let mut candidates_by_source = BTreeMap::<String, usize>::new();
-        loop {
-            let page = build_assessment_plan(paged_input.clone());
-            for source in &page.coverage.instruction_sources {
-                *selected_by_source.entry(source.source.clone()).or_default() +=
-                    source.selected_comparisons;
-                candidates_by_source
-                    .entry(source.source.clone())
-                    .or_insert(source.candidate_pairs);
-            }
-            if !page.coverage.processing_limit_reached {
-                break;
-            }
-            paged_input.comparison_after = page.next_comparison_cursor;
-        }
-        assert_eq!(selected_by_source, candidates_by_source);
+        assert!(
+            plan.coverage
+                .instruction_sources
+                .iter()
+                .any(|source| source.selected_comparisons < source.candidate_pairs)
+        );
     }
 
     #[test]
-    fn comparison_cursor_visits_every_pair_past_the_old_prefix_bound() {
-        let mut assessment_input = input(
+    fn sampled_pass_stops_after_bounded_selection() {
+        let assessment_input = input(
             (0..100)
                 .map(|index| {
                     event(
@@ -1467,19 +2091,15 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n"),
         );
-        let mut seen = BTreeSet::new();
-        loop {
-            let plan = build_assessment_plan(assessment_input.clone());
-            assert!(!plan.comparisons.is_empty());
-            for comparison in &plan.comparisons {
-                assert!(seen.insert(comparison.id.clone()));
-            }
-            if !plan.coverage.processing_limit_reached {
-                break;
-            }
-            assessment_input.comparison_after = plan.next_comparison_cursor;
-        }
-        assert_eq!(seen.len(), 800);
+        let plan = build_assessment_plan(assessment_input);
+        assert_eq!(plan.coverage.candidate_pairs, 800);
+        assert_eq!(plan.comparisons.len(), MAX_ASSESSMENT_CANDIDATES);
+        assert!(plan.coverage.sampled_pass);
+        assert_eq!(
+            plan.coverage.unselected_pairs,
+            800 - MAX_ASSESSMENT_CANDIDATES
+        );
+        assert_eq!(plan.next_comparison_cursor.as_deref(), Some("sample:256"));
     }
 
     #[test]
@@ -1572,8 +2192,8 @@ mod tests {
         let action_text = action["text"].as_str().unwrap();
         assert!(action_text.len() <= MAX_ACTION_TEXT_BYTES);
         assert!(action_text.is_char_boundary(action_text.len()));
-        assert_eq!(action["truncated"], false);
-        assert!(plan.coverage.processing_limit_reached);
+        assert_eq!(action["truncated"], true);
+        assert!(plan.prepared.coverage.sampled_pass);
         let ranges = action_text_ranges(&"界".repeat(100_000));
         assert!(ranges.len() > 100);
         assert_eq!(ranges.first().map(|range| range.0), Some(0));
@@ -1814,6 +2434,8 @@ mod tests {
                 skipped_rules: Vec::new(),
                 skipped_actions: Vec::new(),
                 processing_limit_reached: false,
+                sampled_pass: false,
+                selector_revision: 0,
                 limitations: Vec::new(),
                 reassessed_comparison_ids: Vec::new(),
                 reassessed_rule_ids: Vec::new(),
@@ -1983,6 +2605,8 @@ mod tests {
                 skipped_rules: Vec::new(),
                 skipped_actions: Vec::new(),
                 processing_limit_reached: false,
+                sampled_pass: false,
+                selector_revision: 0,
                 limitations: vec!["some_comparisons_unassessed".to_owned()],
                 reassessed_comparison_ids: Vec::new(),
                 reassessed_rule_ids: Vec::new(),

@@ -85,6 +85,15 @@ impl Store {
         Ok(true)
     }
 
+    pub fn clear_burn_check_request_outcomes(&self, identities: &[String]) -> anyhow::Result<()> {
+        self.lock().execute(
+            "DELETE FROM burn_check_request_outcome
+             WHERE request_identity IN (SELECT value FROM json_each(?1))",
+            [serde_json::to_string(identities)?],
+        )?;
+        Ok(())
+    }
+
     pub fn resolve_burn_check_request(&self, reservation_id: &str) -> anyhow::Result<()> {
         self.lock().execute(
             "DELETE FROM burn_check_request_outcome WHERE reservation_id = ?1",
@@ -339,6 +348,32 @@ mod tests {
         assert!(
             !store
                 .track_burn_check_request("over-limit", "reservation-over-limit", 3)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn retry_clears_only_the_request_identities_being_resent() {
+        let store = Store::open_in_memory(std::path::Path::new("synthetic-state")).unwrap();
+        let identities = vec!["retry-this".to_owned(), "keep-blocked".to_owned()];
+        assert!(
+            store
+                .track_burn_check_requests(&identities, "reservation", 1000)
+                .unwrap()
+        );
+
+        store
+            .clear_burn_check_request_outcomes(&["retry-this".to_owned()])
+            .unwrap();
+
+        assert!(
+            !store
+                .burn_check_request_is_unresolved("retry-this")
+                .unwrap()
+        );
+        assert!(
+            store
+                .burn_check_request_is_unresolved("keep-blocked")
                 .unwrap()
         );
     }

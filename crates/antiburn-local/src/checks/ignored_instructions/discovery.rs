@@ -207,6 +207,8 @@ pub async fn discover_current_instructions(
                 InstructionScope::Global
             } else if adapter == InstructionAdapter::Claude {
                 InstructionScope::Conditional
+            } else if base != &root {
+                InstructionScope::Nested
             } else {
                 InstructionScope::Project
             };
@@ -222,7 +224,11 @@ pub async fn discover_current_instructions(
                     &base,
                     &["AGENTS.override.md", "AGENTS.md"],
                     &codex_fallbacks,
-                    InstructionScope::Project,
+                    if base == root {
+                        InstructionScope::Project
+                    } else {
+                        InstructionScope::Nested
+                    },
                 )
                 .await
             }
@@ -238,7 +244,11 @@ pub async fn discover_current_instructions(
                         "CLAUDE.MD",
                     ],
                     &[],
-                    InstructionScope::Project,
+                    if base == root {
+                        InstructionScope::Project
+                    } else {
+                        InstructionScope::Nested
+                    },
                 )
                 .await;
                 for name in [
@@ -247,7 +257,14 @@ pub async fn discover_current_instructions(
                     ".pi/SYSTEM.md",
                     ".pi/APPEND_SYSTEM.md",
                 ] {
-                    candidates.insert((base.join(name), InstructionScope::Project));
+                    candidates.insert((
+                        base.join(name),
+                        if base == root {
+                            InstructionScope::Project
+                        } else {
+                            InstructionScope::Nested
+                        },
+                    ));
                 }
             }
             InstructionAdapter::OpenCode => {
@@ -256,7 +273,11 @@ pub async fn discover_current_instructions(
                     &base,
                     &["AGENTS.md", "CLAUDE.md"],
                     &[],
-                    InstructionScope::Project,
+                    if base == root {
+                        InstructionScope::Project
+                    } else {
+                        InstructionScope::Nested
+                    },
                 )
                 .await
             }
@@ -265,6 +286,8 @@ pub async fn discover_current_instructions(
                     let scope =
                         if adapter == InstructionAdapter::Claude && relative.contains("AGENTS") {
                             InstructionScope::Conditional
+                        } else if base != root {
+                            InstructionScope::Nested
                         } else {
                             InstructionScope::Project
                         };
@@ -1225,6 +1248,39 @@ mod tests {
             snapshot.source.starts_with("home:")
                 && snapshot.text.contains("Use Semble before exploring")
         }));
+    }
+
+    #[tokio::test]
+    async fn nested_instruction_file_retains_directory_scope_and_current_provenance() {
+        let (_temp, root, home) = roots();
+        std_fs::create_dir_all(root.join("src/module")).unwrap();
+        std_fs::write(root.join("AGENTS.md"), "# Root\nRun tests.").unwrap();
+        std_fs::write(root.join("src/AGENTS.md"), "# Nested\nUse the local API.").unwrap();
+
+        let result = discover_current_instructions(
+            "opencode",
+            SourceFormat::OpenCodeJsonl,
+            &root,
+            &root.join("src/module"),
+            &home,
+        )
+        .await;
+        let parent = result
+            .snapshots
+            .iter()
+            .find(|snapshot| snapshot.source == "project:AGENTS.md")
+            .unwrap();
+        let nested = result
+            .snapshots
+            .iter()
+            .find(|snapshot| snapshot.source == "project:src/AGENTS.md")
+            .unwrap();
+        assert_eq!(parent.scope, InstructionScope::Project);
+        assert_eq!(nested.scope, InstructionScope::Nested);
+        assert_eq!(
+            nested.provenance,
+            InstructionProvenance::CurrentFileComparison
+        );
     }
 
     #[tokio::test]

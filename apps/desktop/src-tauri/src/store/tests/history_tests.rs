@@ -271,12 +271,11 @@ fn selected_history_session_reaches_the_running_worker_state() {
             [],
         )
         .unwrap();
-    assert_eq!(
+    assert!(
         store
             .burn_check_candidates("ignored_instructions", NOW + 181, 180, 16)
             .unwrap()
-            .len(),
-        1
+            .is_empty()
     );
 }
 
@@ -392,7 +391,7 @@ fn legacy_usage_limit_remains_visible_and_repeat_click_preserves_retry() {
 }
 
 #[test]
-fn unchanged_completed_history_is_not_requeued_but_new_revision_is() {
+fn completed_history_requeues_on_request_after_a_new_evaluator_revision() {
     let store = store();
     let record = session("completed-history", NOW - 200);
     store
@@ -415,11 +414,17 @@ fn unchanged_completed_history_is_not_requeued_but_new_revision_is() {
                     source_generation = (SELECT source_generation FROM session WHERE session_id = ?2),
                     source_fingerprint = (SELECT source_fingerprint FROM session WHERE session_id = ?2),
                     incarnation = (SELECT incarnation FROM session WHERE session_id = ?2),
-                    boundary_activity_cursor = (SELECT activity_cursor FROM session WHERE session_id = ?2)
+                    boundary_activity_cursor = (SELECT activity_cursor FROM session WHERE session_id = ?2),
+                    boundary_at_epoch = ?3,
+                    boundary_positions_json = ?4,
+                    updated_at_epoch = ?5
               WHERE session_id = ?2",
             rusqlite::params![
                 antiburn_local::analysis::ignored_instructions::evaluator_revision(),
                 record.key.session_id,
+                NOW - 10,
+                "{\"some-source\":5444}",
+                NOW,
             ],
         )
         .unwrap();
@@ -434,10 +439,32 @@ fn unchanged_completed_history_is_not_requeued_but_new_revision_is() {
         )
         .unwrap();
     assert_eq!(store.enqueue_burn_checks(NOW + 2, 7).unwrap(), 1);
+    assert_eq!(
+        store
+            .lock()
+            .query_row(
+                "SELECT status FROM burn_check_assessment WHERE session_id = ?1",
+                [&record.key.session_id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "idle"
+    );
+    let connection = store.lock();
+    let (boundary, positions): (i64, String) = connection
+        .query_row(
+            "SELECT boundary_at_epoch, boundary_positions_json FROM burn_check_assessment
+             WHERE session_id = ?1",
+            [&record.key.session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(boundary, NOW + 2 - 7 * 24 * 60 * 60);
+    assert_eq!(positions, "{\"*\":0}");
 }
 
 #[test]
-fn old_revision_failures_skip_retry_delay_but_current_failures_wait() {
+fn historical_failures_keep_retry_delay_after_evaluator_changes() {
     let store = store();
     let record = session("revision-retry", NOW - 200);
     store
@@ -481,7 +508,7 @@ fn old_revision_failures_skip_retry_delay_but_current_failures_wait() {
             [&record.key.session_id],
         )
         .unwrap();
-    assert_eq!(store.enqueue_burn_checks(NOW + 2, 7).unwrap(), 1);
+    assert_eq!(store.enqueue_burn_checks(NOW + 2, 7).unwrap(), 0);
     assert_eq!(
         store
             .lock()
@@ -492,7 +519,7 @@ fn old_revision_failures_skip_retry_delay_but_current_failures_wait() {
             )
             .unwrap()
             .as_str(),
-        "idle"
+        "failed"
     );
 }
 

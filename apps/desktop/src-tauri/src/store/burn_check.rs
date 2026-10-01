@@ -20,7 +20,7 @@ const HISTORY_BATCH_KEY: &str = "internal:jevBurnCheckHistoryBatchEpochV1";
 const USAGE_LEDGER_KEY: &str = "internal:burnCheckUsageLedgerV1";
 const USAGE_WINDOW_SECS: i64 = 24 * 60 * 60;
 const MAX_RESULT_BYTES: usize = 1024 * 1024;
-const MAX_PROGRESS_BYTES: usize = 1024 * 1024;
+const MAX_PROGRESS_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BurnCheckInput {
@@ -71,6 +71,27 @@ pub struct BurnCheckAssessment {
     pub request_count: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BurnCheckSampledPair {
+    pub comparison_id: String,
+    pub dependency_digest: String,
+    pub incarnation: u64,
+    pub action_id: String,
+    pub action_digest: String,
+    pub instruction_digest: String,
+    pub selector_revision: u32,
+    pub round: u32,
+    pub assessed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BurnCheckSampleOrigin {
+    pub incarnation: u64,
+    pub boundary_positions: std::collections::BTreeMap<String, u64>,
+    pub boundary_at_epoch: i64,
+    pub historical: bool,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BurnCheckHistoryStatus {
     pub total: usize,
@@ -116,6 +137,316 @@ struct UsageReservation {
 }
 
 impl Store {
+    pub fn burn_check_sample_origin(
+        &self,
+        key: &SessionKey,
+        check_id: &str,
+    ) -> anyhow::Result<Option<BurnCheckSampleOrigin>> {
+        let connection = self.lock();
+        let row: Option<(u64, String, i64, bool)> = connection
+            .query_row(
+                "SELECT incarnation, boundary_positions_json, boundary_at_epoch, historical
+               FROM burn_check_sample_origin
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND check_id = ?4",
+                rusqlite::params![key.environment_key, key.agent, key.session_id, check_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?;
+        row.map(|(incarnation, positions, boundary_at_epoch, historical)| {
+            Ok(BurnCheckSampleOrigin {
+                incarnation,
+                boundary_positions: serde_json::from_str(&positions)?,
+                boundary_at_epoch,
+                historical,
+            })
+        })
+        .transpose()
+    }
+
+    pub fn observe_burn_check_sample_origin(
+        &self,
+        candidate: &BurnCheckCandidate,
+        check_id: &str,
+    ) -> anyhow::Result<BurnCheckSampleOrigin> {
+        let connection = self.lock();
+        connection.execute(
+            "INSERT INTO burn_check_sample_origin
+                (environment_key, agent, session_id, check_id, incarnation,
+                 boundary_positions_json, boundary_at_epoch, historical)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(environment_key, agent, session_id, check_id) DO UPDATE SET
+                 incarnation = excluded.incarnation,
+                 boundary_positions_json = excluded.boundary_positions_json,
+                 boundary_at_epoch = excluded.boundary_at_epoch,
+                 historical = excluded.historical
+             WHERE burn_check_sample_origin.incarnation <> excluded.incarnation",
+            rusqlite::params![
+                candidate.session.key.environment_key,
+                candidate.session.key.agent,
+                candidate.session.key.session_id,
+                check_id,
+                candidate.incarnation,
+                serde_json::to_string(&candidate.boundary_positions)?,
+                candidate.boundary_at_epoch,
+                candidate.historical
+            ],
+        )?;
+        drop(connection);
+        self.burn_check_sample_origin(&candidate.session.key, check_id)?
+            .ok_or_else(|| anyhow::anyhow!("sample origin is unavailable"))
+    }
+
+    pub fn burn_check_sampled_pairs(
+        &self,
+        key: &SessionKey,
+        check_id: &str,
+    ) -> anyhow::Result<Vec<BurnCheckSampledPair>> {
+        let connection = self.lock();
+        let mut statement = connection.prepare(
+            "SELECT comparison_id, dependency_digest, incarnation, action_id, action_digest,
+                    instruction_digest, selector_revision, round, assessed
+               FROM burn_check_sampled_pair
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND check_id = ?4",
+        )?;
+        let rows = statement.query_map(
+            rusqlite::params![key.environment_key, key.agent, key.session_id, check_id],
+            |row| {
+                Ok(BurnCheckSampledPair {
+                    comparison_id: row.get(0)?,
+                    dependency_digest: row.get(1)?,
+                    incarnation: row.get(2)?,
+                    action_id: row.get(3)?,
+                    action_digest: row.get(4)?,
+                    instruction_digest: row.get(5)?,
+                    selector_revision: row.get(6)?,
+                    round: row.get(7)?,
+                    assessed: row.get(8)?,
+                })
+            },
+        )?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    /// Record a page only while its published result belongs to this revision.
+    pub fn save_burn_check_sampled_pairs(
+        &self,
+        input: &BurnCheckInput,
+        pairs: &[BurnCheckSampledPair],
+    ) -> anyhow::Result<bool> {
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        let current: bool = transaction.query_row(
+            "SELECT EXISTS (SELECT 1 FROM burn_check_assessment
+               WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND check_id = ?4
+                 AND input_revision = ?5 AND incarnation = ?6 AND source_generation = ?7
+                 AND source_fingerprint IS ?8 AND published_fence = ?9
+                 AND status IN ('completed', 'failed') AND result_revision = ?5)",
+            rusqlite::params![
+                input.key.environment_key,
+                input.key.agent,
+                input.key.session_id,
+                input.check_id,
+                input.input_revision,
+                input.incarnation,
+                input.source_generation,
+                input.source_fingerprint,
+                input.published_fence
+            ],
+            |row| row.get(0),
+        )?;
+        if !current {
+            return Ok(false);
+        }
+        for pair in pairs {
+            transaction.execute(
+                "INSERT INTO burn_check_sampled_pair
+                    (environment_key, agent, session_id, check_id, comparison_id,
+                     dependency_digest, incarnation, action_id, action_digest, instruction_digest,
+                     selector_revision, round, assessed)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                 ON CONFLICT(environment_key, agent, session_id, check_id, comparison_id, dependency_digest)
+                 DO UPDATE SET selector_revision = excluded.selector_revision,
+                     round = excluded.round, assessed = max(assessed, excluded.assessed)",
+                rusqlite::params![input.key.environment_key, input.key.agent, input.key.session_id,
+                    input.check_id, pair.comparison_id, pair.dependency_digest, pair.incarnation,
+                    pair.action_id, pair.action_digest, pair.instruction_digest,
+                    pair.selector_revision, pair.round, pair.assessed],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(true)
+    }
+
+    /// Fence current-file rules to turns added after this observed instruction version.
+    /// The first observation cannot establish when a file became active.
+    pub fn observe_burn_check_instruction_epoch(
+        &self,
+        key: &SessionKey,
+        incarnation: u64,
+        generation: i64,
+        digest: &str,
+        now_ms: i64,
+    ) -> anyhow::Result<(std::collections::BTreeMap<String, u64>, i64)> {
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        let current: Option<(String, u64, i64, String, i64)> = transaction
+            .query_row(
+                "SELECT instruction_digest, incarnation, source_generation, positions_json, observed_at_ms
+                   FROM burn_check_instruction_epoch
+                  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+                rusqlite::params![key.environment_key, key.agent, key.session_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .optional()?;
+        let observed_positions: String = transaction.query_row(
+            "SELECT COALESCE(json_group_object(source_key, last_index), '{}')
+               FROM (SELECT source_key, MAX(turn_index) AS last_index FROM turn
+                      WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+                      GROUP BY source_key)",
+            rusqlite::params![key.environment_key, key.agent, key.session_id],
+            |row| row.get(0),
+        )?;
+        let mut positions: std::collections::BTreeMap<String, u64> =
+            serde_json::from_str(&observed_positions)?;
+        let observed_at_ms =
+            if let Some((old_digest, old_incarnation, old_generation, previous, at)) = &current
+                && old_digest == digest
+                && *old_incarnation == incarnation
+                && *old_generation == generation
+            {
+                let previous: std::collections::BTreeMap<String, u64> =
+                    serde_json::from_str(previous)?;
+                positions.retain(|source, _| !previous.contains_key(source));
+                positions.extend(previous);
+                *at
+            } else {
+                now_ms
+            };
+        if let Some((old_digest, old_incarnation, old_generation, previous, at)) = current
+            && old_digest == digest
+            && old_incarnation == incarnation
+            && old_generation == generation
+            && at == observed_at_ms
+            && serde_json::from_str::<std::collections::BTreeMap<String, u64>>(&previous)?
+                == positions
+        {
+            return Ok((positions, observed_at_ms));
+        }
+        let positions_json = serde_json::to_string(&positions)?;
+        transaction.execute(
+            "INSERT INTO burn_check_instruction_epoch
+                 (environment_key, agent, session_id, instruction_digest, incarnation,
+                   source_generation, positions_json, observed_at_ms)
+              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(environment_key, agent, session_id) DO UPDATE SET
+                 instruction_digest = excluded.instruction_digest,
+                 incarnation = excluded.incarnation,
+                 source_generation = excluded.source_generation,
+                  positions_json = excluded.positions_json,
+                  observed_at_ms = excluded.observed_at_ms",
+            rusqlite::params![
+                key.environment_key,
+                key.agent,
+                key.session_id,
+                digest,
+                incarnation,
+                generation,
+                positions_json,
+                observed_at_ms
+            ],
+        )?;
+        transaction.commit()?;
+        Ok((positions, observed_at_ms))
+    }
+
+    pub fn save_burn_check_work_answers(
+        &self,
+        input: &BurnCheckInput,
+        progress: &antiburn_local::analysis::jev::JevRunProgress,
+        now_epoch: i64,
+    ) -> anyhow::Result<()> {
+        let Some(scope) = progress
+            .completed_batch_ids
+            .iter()
+            .find(|id| id.starts_with("reuse-scope:"))
+        else {
+            return Ok(());
+        };
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        let mut inserted = false;
+        for (id, result) in &progress.results {
+            let prefix = format!("reuse-item:{id}:");
+            let Some(marker) = progress
+                .completed_batch_ids
+                .iter()
+                .find(|marker| marker.starts_with(&prefix))
+            else {
+                continue;
+            };
+            inserted |= transaction.execute(
+                "INSERT OR IGNORE INTO burn_check_work_answer
+                    (environment_key, agent, session_id, check_id, reuse_scope, item_marker, result_json, updated_at_epoch)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                rusqlite::params![input.key.environment_key, input.key.agent, input.key.session_id,
+                    input.check_id, scope, marker, serde_json::to_string(result)?, now_epoch],
+            )? > 0;
+        }
+        if inserted {
+            transaction.execute(
+                "DELETE FROM burn_check_work_answer WHERE rowid IN (
+                SELECT rowid FROM burn_check_work_answer
+                WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND check_id = ?4
+                ORDER BY updated_at_epoch DESC, rowid DESC LIMIT -1 OFFSET 8192)",
+                rusqlite::params![
+                    input.key.environment_key,
+                    input.key.agent,
+                    input.key.session_id,
+                    input.check_id
+                ],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn burn_check_work_answers(
+        &self,
+        input: &BurnCheckInput,
+    ) -> anyhow::Result<
+        Vec<(
+            String,
+            String,
+            antiburn_local::analysis::jev::JevWorkItemResult,
+        )>,
+    > {
+        let connection = self.lock();
+        let mut query = connection.prepare(
+            "SELECT reuse_scope, item_marker, result_json FROM burn_check_work_answer
+             WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND check_id = ?4",
+        )?;
+        let rows = query.query_map(
+            rusqlite::params![
+                input.key.environment_key,
+                input.key.agent,
+                input.key.session_id,
+                input.check_id
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )?;
+        rows.map(|row| {
+            let (scope, marker, result) = row?;
+            Ok((scope, marker, serde_json::from_str(&result)?))
+        })
+        .collect()
+    }
     /// Freeze the selected historical window at click time.
     pub fn enqueue_burn_checks(&self, now: i64, days: u8) -> anyhow::Result<usize> {
         if !matches!(days, 7 | 30) {
@@ -187,33 +518,37 @@ impl Store {
                   )
                    AND (a.status IS NULL
                        OR (a.boundary_generation IS NOT -2
-                           AND a.status NOT IN ('queued', 'running'))
+                            AND a.status NOT IN ('queued', 'running'))
                        OR (a.boundary_generation = -2 AND (
                             a.status = 'superseded'
-                             OR (a.status = 'failed' AND
-                                 (a.next_attempt_at_epoch IS NULL OR a.next_attempt_at_epoch <= ?2
-                                  OR a.evaluator_revision IS NOT ?3))
-                            OR (a.status = 'completed' AND (
-                                a.evaluator_revision IS NOT ?3
-                                OR a.incarnation <> s.incarnation
-                                OR a.source_generation IS NOT s.source_generation
-                                OR a.source_fingerprint IS NOT s.source_fingerprint
-                                OR a.boundary_activity_cursor <> s.activity_cursor)))))
+                              OR (a.status = 'failed' AND
+                                  (a.next_attempt_at_epoch IS NULL OR a.next_attempt_at_epoch <= ?2))
+                              OR (a.status = 'completed' AND (
+                                  a.incarnation <> s.incarnation
+                                 OR a.source_generation IS NOT s.source_generation
+                                 OR a.source_fingerprint IS NOT s.source_fingerprint
+                                 OR a.boundary_activity_cursor <> s.activity_cursor
+                                 OR a.evaluator_revision IS NOT ?3)))))
                    AND true
               ORDER BY s.updated_at_epoch, s.environment_key, s.agent, s.session_id
               LIMIT 256
               ON CONFLICT(environment_key, agent, session_id, check_id) DO UPDATE SET
                  incarnation = excluded.incarnation, boundary_generation = -2,
-                 boundary_activity_cursor = '', boundary_at_epoch = excluded.boundary_at_epoch,
-                 boundary_positions_json = json_object('*', 0),
-                  status = excluded.status, input_revision = NULL,
-                  progress_json = '{}', updated_at_epoch = excluded.updated_at_epoch,
+                  boundary_activity_cursor = '',
+                   boundary_at_epoch = excluded.boundary_at_epoch,
+                   boundary_positions_json = json_object('*', 0),
+                   status = excluded.status,
+                   input_revision = CASE WHEN burn_check_assessment.status = 'failed'
+                       THEN burn_check_assessment.input_revision ELSE NULL END,
+                   progress_json = CASE WHEN burn_check_assessment.status = 'failed'
+                       THEN burn_check_assessment.progress_json ELSE '{}' END,
+                   updated_at_epoch = excluded.updated_at_epoch,
                   history_batch_epoch = excluded.history_batch_epoch",
-                rusqlite::params![
-                    now.saturating_sub(i64::from(days) * 24 * 60 * 60),
-                    now,
-                    antiburn_local::analysis::ignored_instructions::evaluator_revision(),
-                ],
+                  rusqlite::params![
+                      now.saturating_sub(i64::from(days) * 24 * 60 * 60),
+                      now,
+                      antiburn_local::analysis::ignored_instructions::evaluator_revision(),
+                  ],
             )?;
             total += count;
             if count < 256 {
@@ -402,7 +737,8 @@ impl Store {
                          updated_at_epoch = excluded.updated_at_epoch,
                          next_attempt_at_epoch = NULL,
                          lease_expires_at_epoch = NULL,
-                         last_error_category = NULL",
+                          last_error_category = NULL
+                      WHERE burn_check_assessment.last_error_category IS NOT 'cancelled'",
                     rusqlite::params![
                         key.environment_key,
                         key.agent,
@@ -427,12 +763,22 @@ impl Store {
         transaction.execute("DELETE FROM setting WHERE key = ?1", [ENABLED_AT_KEY])?;
         transaction.execute(
             "UPDATE burn_check_assessment
-                SET status = 'superseded', progress_json = '{}',
+                SET status = 'superseded', last_error_category = 'cancelled',
                     lease_expires_at_epoch = NULL, next_attempt_at_epoch = NULL
               WHERE status IN ('queued', 'running')",
             [],
         )?;
         transaction.commit()?;
+        Ok(())
+    }
+
+    /// Make rejected-key assessments eligible after a replacement credential is saved.
+    pub fn retry_rejected_burn_checks(&self) -> anyhow::Result<()> {
+        self.lock().execute(
+            "UPDATE burn_check_assessment SET next_attempt_at_epoch = NULL
+              WHERE status = 'failed' AND last_error_category = 'authentication_rejected'",
+            [],
+        )?;
         Ok(())
     }
 
@@ -477,8 +823,8 @@ impl Store {
                     s.source_fingerprint,
                     s.incarnation, s.source_generation, s.source_fingerprint,
                      s.activity_cursor, evidence.published_fence,
-                     CASE WHEN assessment.boundary_generation = -2 AND assessment.status = 'completed'
-                          THEN assessment.updated_at_epoch ELSE assessment.boundary_at_epoch END,
+                      CASE WHEN assessment.boundary_generation = -2 AND assessment.status = 'completed'
+                           THEN assessment.updated_at_epoch ELSE assessment.boundary_at_epoch END,
                       assessment.boundary_generation, assessment.boundary_positions_json
                FROM session s
              LEFT JOIN burn_check_assessment AS assessment
@@ -512,8 +858,9 @@ impl Store {
                          AND (assessment.boundary_generation = -1
                             OR s.activity_cursor <> assessment.boundary_activity_cursor)
                        AND s.updated_at_epoch >= assessment.boundary_at_epoch)
-                     OR (assessment.status = 'failed'
-                         AND assessment.next_attempt_at_epoch <= ?4)
+                       OR (assessment.status = 'failed'
+                           AND (assessment.last_error_category = 'continuing'
+                                OR assessment.next_attempt_at_epoch <= ?4))
                      OR assessment.status = 'queued'
                      OR (assessment.status = 'running'
                          AND assessment.lease_expires_at_epoch <= ?4)
@@ -529,16 +876,26 @@ impl Store {
                       AND s.updated_at_epoch >= ?6)
                       OR (assessment.boundary_generation = -2
                           AND assessment.status IN ('idle', 'queued', 'running'))
-                      OR (assessment.boundary_generation = -2
-                          AND assessment.status = 'failed')
-                     OR (assessment.boundary_generation = -2
-                          AND assessment.status IN ('completed', 'superseded')
-                          AND s.activity_cursor <> assessment.boundary_activity_cursor
-                          AND s.updated_at_epoch > assessment.updated_at_epoch)
-                      OR (assessment.status = 'completed'
-                          AND assessment.evaluator_revision IS NOT ?8)
-                      OR (assessment.status = 'failed'
-                          AND assessment.evaluator_revision IS NOT ?8)
+                       OR (assessment.boundary_generation = -2
+                           AND assessment.status = 'failed'
+                           AND (assessment.next_attempt_at_epoch IS NULL
+                                OR assessment.next_attempt_at_epoch <= ?4))
+                       OR (assessment.boundary_generation = -2
+                           AND assessment.status IN ('completed', 'superseded')
+                           AND s.activity_cursor <> assessment.boundary_activity_cursor
+                           AND s.updated_at_epoch > assessment.updated_at_epoch)
+                       OR (assessment.status = 'completed'
+                           AND assessment.boundary_generation <> -2
+                           AND (assessment.incarnation <> s.incarnation
+                                OR assessment.source_generation IS NOT s.source_generation
+                                OR assessment.source_fingerprint IS NOT s.source_fingerprint
+                                OR assessment.published_fence IS NOT evidence.published_fence))
+                       OR (assessment.status = 'completed'
+                           AND assessment.boundary_generation <> -2
+                           AND assessment.evaluator_revision IS NOT ?8)
+                       OR (assessment.status = 'failed'
+                           AND assessment.boundary_generation <> -2
+                           AND assessment.evaluator_revision IS NOT ?8)
                )
                 AND (assessment.status IS NULL
                      OR assessment.status <> 'running'
@@ -550,7 +907,7 @@ impl Store {
                          ('usage_limit', 'request_limit', 'assessment_page_limit'))
               ORDER BY row_number() OVER (
                   PARTITION BY COALESCE(assessment.boundary_generation = -2, 0)
-                  ORDER BY COALESCE(assessment.updated_at_epoch, 0), s.updated_at_epoch DESC,
+                   ORDER BY s.updated_at_epoch DESC, COALESCE(assessment.updated_at_epoch, 0),
                            s.environment_key, s.agent, s.session_id),
                   COALESCE(assessment.boundary_generation = -2, 0),
                   s.environment_key, s.agent, s.session_id
@@ -761,12 +1118,24 @@ impl Store {
             transaction.commit()?;
             return Ok(false);
         };
+        let historical: bool = transaction.query_row(
+            "SELECT EXISTS (SELECT 1 FROM burn_check_assessment
+                WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+                  AND check_id = ?4 AND boundary_generation = -2)",
+            rusqlite::params![
+                input.key.environment_key,
+                input.key.agent,
+                input.key.session_id,
+                input.check_id
+            ],
+            |row| row.get(0),
+        )?;
         if incarnation != input.incarnation
             || generation != input.source_generation
             || fingerprint != input.source_fingerprint
             || cursor != input.activity_cursor
             || fence != Some(input.published_fence)
-            || updated_at < input.boundary_at_epoch
+            || (!historical && updated_at < input.boundary_at_epoch)
             || updated_at > now_epoch.saturating_sub(idle_secs.max(0))
         {
             transaction.commit()?;
@@ -817,9 +1186,7 @@ impl Store {
                            AND burn_check_assessment.status = 'completed' THEN ?6
                       ELSE burn_check_assessment.boundary_generation END,
                  boundary_activity_cursor = CASE WHEN ?15 THEN '' ELSE burn_check_assessment.boundary_activity_cursor END,
-                  boundary_at_epoch = CASE WHEN burn_check_assessment.boundary_generation = -2
-                           AND burn_check_assessment.status = 'completed' THEN ?8
-                      ELSE COALESCE(burn_check_assessment.boundary_at_epoch, ?8) END,
+                  boundary_at_epoch = COALESCE(burn_check_assessment.boundary_at_epoch, ?8),
                  input_revision = excluded.input_revision,
                  evaluator_revision = excluded.evaluator_revision,
                  source_generation = excluded.source_generation,
@@ -1049,7 +1416,13 @@ impl Store {
                  SET status = 'completed', result_json = ?6, result_revision = ?5,
                      progress_json = '{}', boundary_generation = CASE
                          WHEN boundary_generation = -2 THEN -2 ELSE ?9 END,
-                    boundary_activity_cursor = ?10, lease_expires_at_epoch = NULL,
+                     boundary_activity_cursor = ?10,
+                     boundary_positions_json =
+                         (SELECT COALESCE(json_group_object(source_key, last_index), '{}')
+                            FROM (SELECT source_key, MAX(turn_index) AS last_index FROM turn
+                                  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+                                  GROUP BY source_key)),
+                     lease_expires_at_epoch = NULL,
                     next_attempt_at_epoch = NULL, last_error_category = NULL,
                     updated_at_epoch = ?7
               WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
@@ -1205,6 +1578,31 @@ impl Store {
         Ok(updated == 1)
     }
 
+    pub fn release_failed_burn_check_lease(
+        &self,
+        input: &BurnCheckInput,
+        category: &str,
+        retry_at_epoch: i64,
+    ) -> anyhow::Result<bool> {
+        let updated = self.lock().execute(
+            "UPDATE burn_check_assessment
+                SET status = 'failed', lease_expires_at_epoch = NULL,
+                    next_attempt_at_epoch = ?6, last_error_category = ?7
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+                AND check_id = ?4 AND input_revision = ?5 AND status = 'running'",
+            rusqlite::params![
+                input.key.environment_key,
+                input.key.agent,
+                input.key.session_id,
+                input.check_id,
+                input.input_revision,
+                retry_at_epoch,
+                category,
+            ],
+        )?;
+        Ok(updated == 1)
+    }
+
     /// Read one check's durable progress/result without reading private source content.
     pub fn burn_check_assessment(
         &self,
@@ -1283,6 +1681,10 @@ pub(super) fn clear_local_burn_check_state(
 ) -> anyhow::Result<()> {
     let enabled = internal_value_in(connection, ENABLED_AT_KEY)?.is_some();
     connection.execute("DELETE FROM burn_check_assessment", [])?;
+    connection.execute("DELETE FROM burn_check_sampled_pair", [])?;
+    connection.execute("DELETE FROM burn_check_sample_origin", [])?;
+    connection.execute("DELETE FROM burn_check_instruction_epoch", [])?;
+    connection.execute("DELETE FROM burn_check_work_answer", [])?;
     connection.execute("DELETE FROM burn_check_response_cache", [])?;
     connection.execute("DELETE FROM burn_check_request_outcome", [])?;
     connection.execute("DELETE FROM burn_check_usage_reservation", [])?;
@@ -1309,6 +1711,10 @@ pub(super) fn forget_session_usage_in(
         key.agent.as_str(),
         key.session_id.as_str(),
     ]);
+    connection.execute(
+        "DELETE FROM burn_check_work_answer WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+        rusqlite::params![key.environment_key, key.agent, key.session_id],
+    )?;
     connection.execute(
         "UPDATE burn_check_usage_reservation SET session_key = '',
         data = json_set(data, '$.session_key', '') WHERE session_key = ?1",

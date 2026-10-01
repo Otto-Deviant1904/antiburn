@@ -1,9 +1,10 @@
 import "../../../styles/burn-checks-report.css"
 
-import { ChevronRight, Clock, Hourglass } from "lucide-react"
+import { ChevronRight, Clock, Hourglass, Info } from "lucide-react"
 import { useCallback, useRef, useState, type KeyboardEvent, type MouseEvent } from "react"
 
 import { BurnCheckFlame } from "../../../components/burn-checks/BurnCheckFlames"
+import { Tooltip } from "../../../components/presentation/Tooltip"
 import { BURN_CHECK_MARKS } from "../../../components/burn-checks/burnCheckMarks"
 import { ScrollPane } from "../../../components/ui/ScrollPane"
 import { Skeleton } from "../../../components/ui/Skeleton"
@@ -273,9 +274,26 @@ function CheckDetail({
         <div className="burn-check-detail-heading-content">
           <div className="w-full min-w-0">
             <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
-              <h2 className="min-w-0 flex-1 type-title-2 text-label text-balance">
-                {presentation.label}
-              </h2>
+              <div className="flex min-w-0 flex-1 items-center gap-2">
+                <h2 className="min-w-0 type-title-2 text-label text-balance">
+                  {presentation.label}
+                </h2>
+                {check.id === "ignoredInstructions" && check.sampled === true && (
+                  <Tooltip
+                    label="Priority sampling checks likely instruction conflicts first. Later checks can reduce the remaining unassessed gap."
+                    side="bottom"
+                    delayMs={0}
+                  >
+                    <button
+                      type="button"
+                      aria-label="About priority sampling"
+                      className="inline-flex size-6 shrink-0 items-center justify-center rounded-control text-label-tertiary hover:text-label"
+                    >
+                      <Info size={14} aria-hidden="true" />
+                    </button>
+                  </Tooltip>
+                )}
+              </div>
               {showFindingActions && (
                 <div className="max-w-full shrink-0">
                   <CheckDetailActions
@@ -427,11 +445,13 @@ function CheckTrigger({
 }) {
   const presentation = checkRowPresentation(check, state.targets[check.id]?.data?.targets)
   const summary =
-    check.lifecycle === "awaitingVerification"
-      ? "Awaiting verification"
-      : check.lifecycle === "passing"
-        ? "Passed"
-        : `${check.finding} failed · ${check.clean} passed`
+    check.lifecycle == null
+      ? "Not assessed"
+      : check.lifecycle === "awaitingVerification"
+        ? "Awaiting verification"
+        : check.lifecycle === "passing"
+          ? "Passed"
+          : `${check.finding} failed · ${check.clean} passed`
   const metric = presentation.metric?.replace("<", "Under ").replace(" token", "")
   const agents = [
     ...new Map(
@@ -520,18 +540,13 @@ export function BurnChecksReport({
   const activeFailures = presentation.failures
   const activeWins = presentation.wins
   const snoozedChecks = presentation.snoozed
-  const unassessed = report.categories.filter(
-    (check) =>
-      (check.id === focusedCheck || check.id === "ignoredInstructions") &&
-      check.lifecycle == null &&
-      !snoozedIds.has(check.id),
-  )
+  const unassessed = presentation.activeUnavailable
   const checks = [
     ...activeFailures,
     ...activeAwaiting,
     ...activeWins,
-    ...snoozedChecks,
     ...unassessed,
+    ...snoozedChecks,
   ]
   const reportKey = checks.map((check) => check.id).join(":")
   const initialId =
@@ -548,6 +563,7 @@ export function BurnChecksReport({
     passedPreference: null,
   }))
   const [snoozedOpen, setSnoozedOpen] = useState(false)
+  const [unassessedOpen, setUnassessedOpen] = useState(false)
   if (active && ui.reportKey !== reportKey) {
     setUi((value) => ({
       ...value,
@@ -565,6 +581,8 @@ export function BurnChecksReport({
     }))
     if (ui.selectedId === focusedCheck && focusedCheck && snoozedIds.has(focusedCheck))
       setSnoozedOpen(true)
+    if (ui.selectedId === focusedCheck && unassessed.some((check) => check.id === focusedCheck))
+      setUnassessedOpen(true)
   }
   const searchRequest = focusedCheck ? `${focusedCheck}:${focusRevision ?? 0}` : null
   if (focusedCheck && ui.searchRequest !== searchRequest) {
@@ -578,6 +596,7 @@ export function BurnChecksReport({
         : value.passedPreference,
     }))
     if (snoozedIds.has(focusedCheck)) setSnoozedOpen(true)
+    if (unassessed.some((check) => check.id === focusedCheck)) setUnassessedOpen(true)
   }
   const lastFocus = useRef<string | null>(null)
   const passedOpen = ui.passedPreference ?? activeFailures.length === 0
@@ -585,10 +604,10 @@ export function BurnChecksReport({
     ? ui.selectedId
     : initialId
   const visibleChecks = [
-    ...unassessed,
     ...activeFailures,
     ...activeAwaiting,
     ...(passedOpen ? activeWins : []),
+    ...(unassessedOpen ? unassessed : []),
     ...(snoozedOpen ? snoozedChecks : []),
   ]
   const unavailableSelected =
@@ -602,11 +621,13 @@ export function BurnChecksReport({
       : (activeFailures[0]?.id ??
         activeAwaiting[0]?.id ??
         (passedOpen ? activeWins[0]?.id : null) ??
+        (unassessedOpen ? unassessed[0]?.id : null) ??
         (snoozedOpen ? snoozedChecks[0]?.id : null) ??
         null)
   const rowRefs = useRef(new Map<ChecksCategoryPayload["id"], HTMLButtonElement>())
   const focusedRow = useRef<ChecksCategoryPayload["id"] | null>(null)
   const passedTriggerRef = useRef<HTMLButtonElement>(null)
+  const unassessedTriggerRef = useRef<HTMLButtonElement>(null)
   const snoozedTriggerRef = useRef<HTMLButtonElement>(null)
   if (snoozeState.status !== "ready") return null
 
@@ -637,6 +658,27 @@ export function BurnChecksReport({
           ? (activeFailures[0]?.id ??
             activeAwaiting[0]?.id ??
             (passedOpen ? activeWins[0]?.id : null) ??
+            null)
+          : value.selectedId,
+      }))
+      queueMicrotask(() => trigger.focus())
+    }
+  }
+
+  const toggleUnassessed = (event: MouseEvent<HTMLButtonElement>) => {
+    const trigger = event.currentTarget
+    const nextOpen = !unassessedOpen
+    setUnassessedOpen(nextOpen)
+    if (nextOpen && selectedVisibleId == null) {
+      selectCheck(unassessed[0]!.id, false)
+    } else if (!nextOpen) {
+      setUi((value) => ({
+        ...value,
+        selectedId: unassessed.some((item) => item.id === value.selectedId)
+          ? (activeFailures[0]?.id ??
+            activeAwaiting[0]?.id ??
+            (passedOpen ? activeWins[0]?.id : null) ??
+            (snoozedOpen ? snoozedChecks[0]?.id : null) ??
             null)
           : value.selectedId,
       }))
@@ -707,6 +749,8 @@ export function BurnChecksReport({
               snoozedTriggerRef.current?.focus()
             else if (hiddenGroup?.id === "burn-checks-passed-body")
               passedTriggerRef.current?.focus()
+            else if (hiddenGroup?.id === "burn-checks-unassessed-body")
+              unassessedTriggerRef.current?.focus()
           })
         }}
         onClick={() => selectCheck(check.id)}
@@ -733,11 +777,6 @@ export function BurnChecksReport({
             viewportClassName="burn-checks-collection-scroll"
           >
             <div className="burn-checks-collection-content">
-              {unassessed.length > 0 && (
-                <div className="burn-checks-unassessed">
-                  {unassessed.map((check) => renderCheck(check))}
-                </div>
-              )}
               {activeFailures.length > 0 && (
                 <section className="burn-checks-group" aria-labelledby="burn-checks-failed">
                   <div className="burn-checks-group-body">
@@ -807,6 +846,58 @@ export function BurnChecksReport({
                   </div>
                 </section>
               )}
+              {unassessed.length > 0 && (
+                <section className="burn-checks-group" aria-labelledby="burn-checks-unassessed">
+                  <h2>
+                    <button
+                      ref={unassessedTriggerRef}
+                      id="burn-checks-unassessed"
+                      type="button"
+                      aria-label={`Not assessed (${unassessed.length})`}
+                      aria-expanded={unassessedOpen}
+                      aria-controls="burn-checks-unassessed-body"
+                      onClick={toggleUnassessed}
+                      onKeyDown={(event) => {
+                        if (event.key !== "ArrowDown") return
+                        event.preventDefault()
+                        if (!unassessedOpen) setUnassessedOpen(true)
+                        selectCheck(unassessed[0]!.id)
+                        queueMicrotask(() => rowRefs.current.get(unassessed[0]!.id)?.focus())
+                      }}
+                      onFocus={() => {
+                        focusedRow.current = null
+                      }}
+                      className="burn-checks-passed-trigger flex w-full items-center gap-2 rounded-control px-1 text-left hover:text-label"
+                    >
+                      <span
+                        className="inline-block size-3.5 shrink-0 rounded-full border-2 border-burn-check-neutral"
+                        aria-hidden="true"
+                      />
+                      <span className="type-footnote font-medium! text-label-tertiary">
+                        Not assessed
+                      </span>
+                      <span className="burn-check-group-count type-footnote tabular-nums text-label-tertiary">
+                        {unassessed.length}
+                      </span>
+                      <ChevronRight
+                        size={14}
+                        className={cn(
+                          "ml-auto text-label-tertiary",
+                          unassessedOpen && "rotate-90",
+                        )}
+                        aria-hidden="true"
+                      />
+                    </button>
+                  </h2>
+                  <div
+                    id="burn-checks-unassessed-body"
+                    className="burn-checks-group-body"
+                    hidden={!unassessedOpen}
+                  >
+                    {unassessed.map((check) => renderCheck(check))}
+                  </div>
+                </section>
+              )}
               <section className="burn-checks-group" aria-labelledby="burn-checks-snoozed">
                 <h2>
                   <button
@@ -863,9 +954,11 @@ export function BurnChecksReport({
         >
           {unavailableSelected ? (
             <UnavailableSearchCheck check={focusedCheck} revision={focusRevision} />
-          ) : checks.length === 0 ? (
+          ) : selectedVisibleId == null ? (
             <p className="burn-checks-detail-content type-body text-label-secondary">
-              Details will appear when a check has enough evidence.
+              {unassessed.length > 0
+                ? "Open Not assessed to inspect a check."
+                : "Details will appear when a check has enough evidence."}
             </p>
           ) : (
             checks.map((check) => (

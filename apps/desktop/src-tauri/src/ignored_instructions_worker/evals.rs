@@ -413,6 +413,8 @@ async fn persisted_opencode_pages_preserve_order_and_expose_projection_limits() 
     );
 
     let mut cursor = AssessmentCursor {
+        round: 0,
+        backlog: false,
         input_revision: Some(paged.first_page.input.input_revision.clone()),
         content_offset: 0,
         comparison_after: None,
@@ -1303,6 +1305,34 @@ async fn build_eval_harness(shapes: Vec<EvalShape>) -> EvalHarness {
                 .text
                 .contains("Run focused tests before publishing a release")
         }));
+        if id == "violates-multiple" {
+            let mut history = candidate.clone();
+            history.historical = true;
+            history.boundary_positions = BTreeMap::from([("*".to_owned(), 0)]);
+            let historical = match prepare_input_with_home(
+                &store,
+                &history,
+                0,
+                None,
+                home.path(),
+                &mut discovery_cache,
+            )
+            .await
+            .expect("prepare selected history")
+            {
+                PrepareInputOutcome::Ready(input) => input,
+                _ => panic!("published history has supported source content"),
+            };
+            assert!(!historical.future_only);
+            assert!(historical.content.instructions.iter().any(|instruction| {
+                instruction.provenance == InstructionProvenance::CurrentFileComparison
+            }));
+            assert!(
+                historical.context.check_context["assessment_plan"]["comparisons"]
+                    .as_array()
+                    .is_some_and(|comparisons| !comparisons.is_empty())
+            );
+        }
 
         let mut later_pages = Vec::new();
         let mut offset = first_page.next_content_offset;

@@ -32,6 +32,8 @@ export interface ChecksCategoryPayload {
   clean: number
   /** Sessions without enough evidence for a finding or clean result. */
   unavailable: number
+  /** True when Ignored Instructions published a priority-sampled assessment. */
+  sampled?: boolean
   /** Estimated avoidable tokens divided by total used tokens, in basis points from 0 to 10000. */
   estimatedTokenBurnBasisPoints: number | null
 }

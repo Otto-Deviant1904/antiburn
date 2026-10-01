@@ -25,7 +25,8 @@ use crate::jev_worker::{
 use crate::session_lifecycle::SessionEvents;
 use crate::store::{
     BurnCheckAssessment, BurnCheckCandidate, BurnCheckFailure, BurnCheckInput,
-    SELECTED_CONTENT_PROGRESS_REVISION, SelectedContentProgress, Store,
+    BurnCheckSampleOrigin, BurnCheckSampledPair, SELECTED_CONTENT_PROGRESS_REVISION,
+    SelectedContentProgress, Store,
 };
 use progress::{CompactCarriedComparisons, CompactProgress};
 
@@ -33,6 +34,16 @@ const CHECK_ID: &str = "ignored_instructions";
 const IDLE_SECS: i64 = 180;
 const LEASE_SECS: i64 = 300;
 const RETRY_DELAY_SECS: i64 = 30 * 60;
+const SAMPLE_SIZE: usize = 256;
+
+struct SamplingPass<'a> {
+    pairs: &'a [BurnCheckSampledPair],
+    round: u32,
+    backlog: bool,
+    origin: &'a BurnCheckSampleOrigin,
+    #[cfg(test)]
+    legacy_fixture: bool,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DiscoveryCacheIdentity {
@@ -58,6 +69,8 @@ struct InstructionDiscoveryCache {
 #[serde(default)]
 struct AssessmentCursor {
     input_revision: Option<String>,
+    round: u32,
+    backlog: bool,
     #[cfg(test)]
     content_offset: usize,
     comparison_after: Option<String>,
@@ -89,6 +102,8 @@ enum StoredCarriedComparisons {
 #[serde(default)]
 struct StoredAssessmentCursor {
     input_revision: Option<String>,
+    round: u32,
+    backlog: bool,
     #[cfg(test)]
     content_offset: usize,
     comparison_after: Option<String>,
@@ -126,6 +141,8 @@ fn parse_checkpoint(
     Ok((
         AssessmentCursor {
             input_revision: stored.input_revision,
+            round: stored.round,
+            backlog: stored.backlog,
             #[cfg(test)]
             content_offset: stored.content_offset,
             comparison_after: stored.comparison_after,
@@ -177,6 +194,8 @@ fn serialize_selected_cursor_progress(
     #[derive(serde::Serialize)]
     struct Checkpoint<'a> {
         input_revision: &'a Option<String>,
+        round: u32,
+        backlog: bool,
         #[cfg(test)]
         content_offset: usize,
         comparison_after: &'a Option<String>,
@@ -190,6 +209,8 @@ fn serialize_selected_cursor_progress(
     }
     Ok(serde_json::to_string(&Checkpoint {
         input_revision: &cursor.input_revision,
+        round: cursor.round,
+        backlog: cursor.backlog,
         #[cfg(test)]
         content_offset: cursor.content_offset,
         comparison_after: &cursor.comparison_after,
@@ -222,6 +243,7 @@ fn restore_selected_assessment(
         .map(|assessment| parse_checkpoint(&assessment.progress_json))
         .transpose()?
         .unwrap_or_default();
+    let round = cursor.round;
     let mut selected = selected.unwrap_or_default();
     if cursor.input_revision.as_deref() != Some(input_revision)
         || selected.revision != SELECTED_CONTENT_PROGRESS_REVISION
@@ -233,6 +255,7 @@ fn restore_selected_assessment(
         compact = None;
         cursor = AssessmentCursor {
             input_revision: Some(input_revision.to_owned()),
+            round: round.saturating_add(u32::from(assessment.is_some())),
             prior_findings: assessment.map(carried_findings).unwrap_or_default(),
             ..Default::default()
         };
@@ -298,7 +321,81 @@ async fn run_candidate(
     let candidate_started = Instant::now();
     let input_preparation_started = Instant::now();
     let mut discovery_cache = InstructionDiscoveryCache::default();
-    let mut input = match prepare_input(store, candidate, None, None, &mut discovery_cache).await? {
+    let stored_before_queue = store.burn_check_assessment(&candidate.session.key, CHECK_ID)?;
+    let existing_pairs = store.burn_check_sampled_pairs(&candidate.session.key, CHECK_ID)?;
+    let origin = store.observe_burn_check_sample_origin(candidate, CHECK_ID)?;
+    let round = existing_pairs
+        .iter()
+        .map(|pair| pair.round)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(u32::from(
+            stored_before_queue
+                .as_ref()
+                .is_some_and(|old| old.status == "completed"),
+        ));
+    let saved_position = stored_before_queue
+        .as_ref()
+        .and_then(|assessment| {
+            parse_checkpoint(&assessment.progress_json)
+                .ok()
+                .map(|checkpoint| (assessment, checkpoint))
+        })
+        .and_then(|(assessment, (cursor, _, selected))| {
+            (cursor.input_revision.as_deref() == assessment.input_revision.as_deref()
+                && selected.as_ref().is_some_and(|progress| {
+                    progress.revision == SELECTED_CONTENT_PROGRESS_REVISION
+                }))
+            .then_some((
+                selected.and_then(|progress| progress.cursor),
+                cursor.comparison_after,
+            ))
+        })
+        .filter(|(content, comparison)| content.is_some() || comparison.is_some());
+    let resumed_backlog = stored_before_queue
+        .as_ref()
+        .and_then(|assessment| parse_cursor(&assessment.progress_json).ok())
+        .is_some_and(|(cursor, _)| cursor.backlog);
+    let pass = |backlog| SamplingPass {
+        pairs: &existing_pairs,
+        round,
+        backlog,
+        origin: &origin,
+        #[cfg(test)]
+        legacy_fixture: false,
+    };
+    let (saved_content, saved_comparison) = saved_position.clone().unwrap_or_default();
+    let preparation = prepare_input(
+        store,
+        candidate,
+        saved_content.as_ref(),
+        saved_comparison,
+        &mut discovery_cache,
+        pass(resumed_backlog),
+    )
+    .await;
+    let stale_cursor = saved_position.is_some()
+        && matches!(
+            preparation
+                .as_ref()
+                .err()
+                .and_then(|error| error.downcast_ref::<SelectedContentQueryError>()),
+            Some(SelectedContentQueryError::StaleCursor)
+        );
+    let preparation = if stale_cursor {
+        prepare_input(
+            store,
+            candidate,
+            None,
+            None,
+            &mut discovery_cache,
+            pass(false),
+        )
+        .await
+    } else {
+        preparation
+    }?;
+    let mut input = match preparation {
         PrepareInputOutcome::Ready(input) => *input,
         PrepareInputOutcome::Unsupported => {
             ::tracing::debug!(
@@ -339,106 +436,119 @@ async fn run_candidate(
             return Ok(());
         }
     };
-    let stored_before_queue = store.burn_check_assessment(&input.key, CHECK_ID)?;
-    let (mut cursor, mut compact_progress, mut selected_progress) =
-        restore_selected_assessment(stored_before_queue.as_ref(), &input.input_revision)?;
-    if !store.queue_burn_check_assessment(&input, unix_now(), IDLE_SECS)? {
-        ::tracing::debug!(
-            event = "burn_check_queue_rejected",
-            check_id = CHECK_ID,
-            agent = %candidate.session.key.agent,
-            historical = candidate.historical,
-        );
-        return Ok(());
-    }
-    if !store.claim_burn_check_assessment(&input, unix_now(), LEASE_SECS, IDLE_SECS)? {
-        ::tracing::debug!(
-            event = "burn_check_claim_rejected",
-            check_id = CHECK_ID,
-            agent = %candidate.session.key.agent,
-            historical = candidate.historical,
-        );
-        return Ok(());
-    }
-    if candidate.historical {
-        crate::jev_settings::progress_changed(app);
-    }
-    if selected_progress.cursor.is_some() || cursor.comparison_after.is_some() {
-        let resumed = prepare_input(
+    let saved_revision = stored_before_queue
+        .as_ref()
+        .and_then(|assessment| assessment.input_revision.as_deref());
+    let resumed_revision_changed = (saved_position.is_some() || resumed_backlog)
+        && saved_revision != Some(input.input_revision.as_str());
+    if resumed_revision_changed {
+        input = match prepare_input(
             store,
             candidate,
-            selected_progress.cursor.as_ref(),
-            cursor.comparison_after.clone(),
+            None,
+            None,
             &mut discovery_cache,
+            pass(false),
         )
-        .await;
-        let next = match resumed {
-            Ok(PrepareInputOutcome::Ready(input)) => Some(*input),
-            Ok(PrepareInputOutcome::Unsupported) => {
-                store.record_burn_check_candidate_issue_for_check(
-                    CHECK_ID,
-                    candidate,
-                    true,
-                    0,
-                    unix_now(),
-                )?;
-                return Ok(());
-            }
-            Ok(PrepareInputOutcome::Unavailable) => {
-                store.record_burn_check_candidate_issue_for_check(
-                    CHECK_ID,
-                    candidate,
-                    false,
-                    unix_now().saturating_add(RETRY_DELAY_SECS),
-                    unix_now(),
-                )?;
-                return Ok(());
-            }
-            Err(error)
-                if matches!(
-                    error.downcast_ref::<SelectedContentQueryError>(),
-                    Some(SelectedContentQueryError::StaleCursor)
-                ) =>
-            {
-                compact_progress = None;
-                selected_progress.cursor = None;
-                cursor = AssessmentCursor {
-                    input_revision: Some(input.input_revision.clone()),
-                    prior_findings: stored_before_queue
-                        .as_ref()
-                        .map(carried_findings)
-                        .unwrap_or_default(),
-                    ..Default::default()
-                };
-                None
-            }
-            Err(error) => return Err(error),
+        .await?
+        {
+            PrepareInputOutcome::Ready(input) => *input,
+            _ => return Ok(()),
         };
-        if let Some(next) = next {
-            input.context = next.context;
-            input.page_actions = next.page_actions;
-            input.more_content = next.more_content;
-            input.next_content_cursor = next.next_content_cursor;
-            input.prior_history_complete = next.prior_history_complete;
-        }
     }
+    let (cursor, compact_progress, selected_progress) =
+        restore_selected_assessment(stored_before_queue.as_ref(), &input.input_revision)?;
+    let (mut cursor, compact_progress, mut selected_progress) = if stale_cursor {
+        (
+            AssessmentCursor {
+                input_revision: Some(input.input_revision.clone()),
+                round: cursor.round.saturating_add(1),
+                prior_findings: stored_before_queue
+                    .as_ref()
+                    .map(carried_findings)
+                    .unwrap_or_default(),
+                ..Default::default()
+            },
+            None,
+            SelectedContentProgress {
+                revision: SELECTED_CONTENT_PROGRESS_REVISION,
+                cursor: None,
+            },
+        )
+    } else {
+        (cursor, compact_progress, selected_progress)
+    };
     ignored_instructions::extend_jev_context_with_history(
         &mut input.context,
         &mut cursor.carried_comparisons,
         &input.page_actions,
         input.prior_history_complete,
     )?;
+    let remaining = SAMPLE_SIZE.saturating_sub(
+        cursor
+            .result
+            .as_ref()
+            .map_or(0, |result| result.coverage.selected_comparisons),
+    );
+    limit_comparison_page(&mut input.context, remaining)?;
     let orchestration = admit_jev_orchestration().await?;
     let mut prepared_plan =
         ignored_instructions::IgnoredInstructionsCheck.prepare(&input.context)?;
     let plan = &prepared_plan.prepared;
     let work_items = &prepared_plan.work_items;
-    if let Some(compact) = compact_progress {
+    cursor.round = round;
+    if let Some(compact) = compact_progress
+        && !compact.is_empty()
+    {
         cursor.progress = compact.restore(
             &ignored_instructions::IgnoredInstructionsCheck,
             &input.context,
             work_items,
         )?;
+    }
+    if cursor.progress.results.is_empty() {
+        let cached = store.burn_check_work_answers(&input)?;
+        let active = work_items
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut by_scope = BTreeMap::<
+            String,
+            Vec<(String, antiburn_local::analysis::jev::JevWorkItemResult)>,
+        >::new();
+        for (scope, marker, result) in cached {
+            if marker.starts_with(&format!("reuse-item:{}:", result.work_item_id)) {
+                by_scope.entry(scope).or_default().push((marker, result));
+            }
+        }
+        if let Some((scope, answers)) = by_scope.into_iter().max_by_key(|(_, answers)| {
+            (
+                answers
+                    .iter()
+                    .filter(|(_, answer)| active.contains(answer.work_item_id.as_str()))
+                    .count(),
+                answers.len(),
+            )
+        }) {
+            cursor.progress.completed_batch_ids.insert(scope);
+            for (marker, answer) in answers {
+                cursor.progress.completed_batch_ids.insert(marker);
+                cursor
+                    .progress
+                    .results
+                    .insert(answer.work_item_id.clone(), answer);
+            }
+        }
+    }
+    if !store.queue_burn_check_assessment(&input, unix_now(), IDLE_SECS)? {
+        return Ok(());
+    }
+    if !store.claim_burn_check_assessment(&input, unix_now(), LEASE_SECS, IDLE_SECS)? {
+        ::tracing::debug!(event = "burn_check_claim_rejected", check_id = CHECK_ID);
+        return Ok(());
+    }
+    if candidate.historical {
+        crate::jev_settings::progress_changed(app);
     }
     let mut global_rules = 0usize;
     let mut global_pairs = 0usize;
@@ -477,7 +587,6 @@ async fn run_candidate(
         project_pairs,
         project_selected,
     );
-    let more_comparisons = plan.coverage.processing_limit_reached;
     let more_content = input.more_content;
     let next_content_cursor = input.next_content_cursor.clone();
     let checkpoint_work_items = work_items.clone();
@@ -515,6 +624,11 @@ async fn run_candidate(
         execute,
         |progress| {
             let checkpoint_started = Instant::now();
+            store.save_burn_check_work_answers(&input, progress, unix_now())
+                .map_err(|error| {
+                    ::tracing::warn!(event = "burn_check_work_answer_save_failed", error = %error);
+                    JevError::ProgressStorageFailure
+                })?;
             let serialized = serialize_selected_cursor_progress(&cursor, progress, &checkpoint_work_items, &context, &mut checkpoint_followups, Some(&selected_progress))
                 .map_err(|_| JevError::InvalidCheckPlan)?;
             let serialization_elapsed_ms = checkpoint_started.elapsed().as_millis();
@@ -546,7 +660,18 @@ async fn run_candidate(
             Ok(())
         },
     )
-    .await?;
+    .await;
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            store.release_failed_burn_check_lease(
+                &input,
+                error_category(&error),
+                unix_now().saturating_add(RETRY_DELAY_SECS),
+            )?;
+            return Err(error.into());
+        }
+    };
     let plan = &prepared_plan.prepared;
     let work_items = &prepared_plan.work_items;
     ::tracing::debug!(
@@ -569,6 +694,7 @@ async fn run_candidate(
     }
     let page_result = outcome.result;
     let result_before_page = cursor.result.clone();
+    let new_content_page = selected_progress.cursor.is_some() && cursor.comparison_after.is_none();
     if outcome.failure.is_none() && more_content {
         let mut carried = BTreeMap::new();
         for comparison in plan
@@ -594,12 +720,38 @@ async fn run_candidate(
         &page_result,
         more_content,
     );
+    let sampled_pairs =
+        sampled_pairs_for_page(plan, &page_result, cursor.round, input.incarnation)?;
     let mut result = page_result;
+    if input.future_only {
+        result
+            .coverage
+            .limitations
+            .retain(|limit| limit != "current_file_not_historical_proof");
+    }
     if let Some(previous) = cursor.result.clone() {
-        merge_assessment(&mut result, previous);
+        merge_assessment_page(&mut result, previous, new_content_page);
     }
     result.input_revision = input.input_revision.clone();
-    let advancing = outcome.failure.is_none() && (more_comparisons || more_content);
+    let more_comparisons =
+        plan.next_comparison_cursor.is_some() && result.coverage.selected_comparisons < SAMPLE_SIZE;
+    let start_backlog = outcome.failure.is_none()
+        && !more_comparisons
+        && !more_content
+        && !cursor.backlog
+        && !existing_pairs.is_empty()
+        && result.coverage.selected_comparisons < SAMPLE_SIZE;
+    let advancing = outcome.failure.is_none()
+        && (more_comparisons
+            || start_backlog
+            || continue_content_pass(more_content, result.coverage.selected_comparisons));
+    if outcome.failure.is_none() && more_content && !advancing {
+        result.coverage.sampled_pass = true;
+        result
+            .coverage
+            .limitations
+            .push("sampled_content_selection".to_owned());
+    }
     if advancing {
         for finding in &mut result.findings {
             finding.limitations.retain(|limit| {
@@ -620,6 +772,10 @@ async fn run_candidate(
         Some(result.clone())
     };
     if advancing {
+        if start_backlog {
+            cursor.backlog = true;
+            selected_progress.cursor = None;
+        }
         advance_selected_assessment_page(
             &mut cursor,
             &mut selected_progress,
@@ -657,7 +813,7 @@ async fn run_candidate(
     let progress_json = serialize_selected_cursor_progress(
         &cursor,
         &cursor.progress,
-        work_items,
+        if advancing { &[] } else { work_items },
         &context,
         &mut checkpoint_followups,
         Some(&selected_progress),
@@ -694,11 +850,13 @@ async fn run_candidate(
             },
             &progress_json,
             candidate.historical,
+            &sampled_pairs,
         )
         .await?;
         return Ok(());
     };
     if published {
+        store.save_burn_check_sampled_pairs(&input, &sampled_pairs)?;
         ::tracing::debug!(
             event = "checks_report_changed_emitted",
             source = "jev_worker",
@@ -710,9 +868,198 @@ async fn run_candidate(
     Ok(())
 }
 
+fn continue_content_pass(more_content: bool, selected_comparisons: usize) -> bool {
+    more_content && selected_comparisons < SAMPLE_SIZE
+}
+
+fn limit_comparison_page(context: &mut JevSessionContext, remaining: usize) -> anyhow::Result<()> {
+    let mut plan: ignored_instructions::AssessmentPlan =
+        serde_json::from_value(context.check_context["assessment_plan"].clone())?;
+    if plan.comparisons.len() <= remaining {
+        return Ok(());
+    }
+    plan.comparisons.truncate(remaining);
+    plan.coverage.selected_comparisons = remaining;
+    plan.coverage.unselected_pairs = plan.coverage.candidate_pairs.saturating_sub(remaining);
+    for source in &mut plan.coverage.instruction_sources {
+        source.selected_comparisons = plan
+            .comparisons
+            .iter()
+            .filter(|comparison| comparison.reference.source == source.source)
+            .count();
+    }
+    plan.coverage.sampled_pass = true;
+    if !plan
+        .coverage
+        .limitations
+        .iter()
+        .any(|limit| limit == "sampled_candidate_selection")
+    {
+        plan.coverage
+            .limitations
+            .push("sampled_candidate_selection".into());
+    }
+    context.limitations = plan.coverage.limitations.clone();
+    context.check_context["assessment_plan"] = serde_json::to_value(plan)?;
+    Ok(())
+}
+
+fn sampled_pairs_for_page(
+    plan: &ignored_instructions::AssessmentPlan,
+    result: &ignored_instructions::AssessmentResult,
+    round: u32,
+    incarnation: u64,
+) -> anyhow::Result<Vec<BurnCheckSampledPair>> {
+    let unassessed = result
+        .unassessed_comparisons
+        .iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    let pending = result
+        .pending_rules
+        .iter()
+        .map(|rule| rule.rule_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let evidence_complete = !result.coverage.limitations.iter().any(|limit| {
+        matches!(
+            limit.as_str(),
+            "source_evidence_is_partial"
+                | "truncated_source_content"
+                | "instruction_scan_incomplete"
+                | "historical_instruction_snapshot_unavailable"
+        )
+    });
+    plan.comparisons
+        .iter()
+        .map(|comparison| {
+            let dependency_digest = comparison_dependency(plan, comparison, incarnation)?;
+            Ok(BurnCheckSampledPair {
+                comparison_id: comparison.id.clone(),
+                dependency_digest,
+                incarnation,
+                action_id: comparison.reference.action_id.clone(),
+                action_digest: comparison.reference.action_digest.clone(),
+                instruction_digest: comparison.reference.instruction_digest.clone(),
+                selector_revision: plan.coverage.selector_revision,
+                round,
+                assessed: evidence_complete
+                    && !unassessed.contains(&comparison.id)
+                    && !pending.contains(comparison.reference.rule_id.as_str()),
+            })
+        })
+        .collect()
+}
+
+fn comparison_dependency(
+    plan: &ignored_instructions::AssessmentPlan,
+    comparison: &ignored_instructions::CandidateComparison,
+    incarnation: u64,
+) -> anyhow::Result<String> {
+    Ok(ignored_instructions::sha256_hex(&serde_json::to_vec(&(
+        incarnation,
+        plan.model_version.as_str(),
+        plan.projection_revision,
+        plan.chunking_revision,
+        plan.question_revision,
+        plan.reducer_revision,
+        comparison,
+    ))?))
+}
+
+fn verify_sampling_ledger(
+    input: &ignored_instructions::AssessmentInput,
+    pairs: &[BurnCheckSampledPair],
+    ledger: &mut ignored_instructions::SamplingLedger,
+) -> anyhow::Result<()> {
+    if ledger.comparison_ids.is_empty() {
+        return Ok(());
+    }
+    let mut expected = BTreeMap::<&str, std::collections::BTreeSet<&str>>::new();
+    for pair in pairs
+        .iter()
+        .filter(|pair| ledger.comparison_ids.contains(&pair.comparison_id))
+    {
+        expected
+            .entry(&pair.comparison_id)
+            .or_default()
+            .insert(&pair.dependency_digest);
+    }
+    let mut verified = std::collections::BTreeSet::new();
+    let mut probe = input.clone();
+    probe.comparison_after = None;
+    for _ in 0..SAMPLE_SIZE.div_ceil(ignored_instructions::MAX_ASSESSMENT_CANDIDATES) {
+        let plan = ignored_instructions::build_assessment_plan(probe.clone());
+        for comparison in &plan.comparisons {
+            if let Some(digests) = expected.get(comparison.id.as_str()) {
+                let digest = comparison_dependency(&plan, comparison, input.incarnation)?;
+                if digests.contains(digest.as_str()) {
+                    verified.insert(comparison.id.clone());
+                }
+            }
+        }
+        if verified.len() == ledger.comparison_ids.len() || plan.next_comparison_cursor.is_none() {
+            break;
+        }
+        probe.comparison_after = plan.next_comparison_cursor;
+    }
+    ledger.comparison_ids = verified;
+    Ok(())
+}
+
+fn sampling_ledger(
+    content: &ignored_instructions::SessionContentEvidence,
+    pairs: &[BurnCheckSampledPair],
+    round: u32,
+    incarnation: u64,
+    backlog: bool,
+) -> ignored_instructions::SamplingLedger {
+    let actions = content
+        .actions
+        .iter()
+        .map(|action| {
+            (
+                action.reference.id.as_str(),
+                ignored_instructions::content_action_digest(action),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let instructions = content
+        .instructions
+        .iter()
+        .map(|instruction| instruction.digest.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut ledger = ignored_instructions::SamplingLedger::default();
+    for pair in pairs.iter().filter(|pair| {
+        pair.incarnation == incarnation
+            && (pair.assessed && pair.round < round || backlog && pair.round == round)
+    }) {
+        if actions
+            .get(pair.action_id.as_str())
+            .is_some_and(|digest| digest != &pair.action_digest)
+        {
+            continue;
+        }
+        ledger.known_action_ids.insert(pair.action_id.clone());
+        if instructions.contains(pair.instruction_digest.as_str())
+            && actions.get(pair.action_id.as_str()) == Some(&pair.action_digest)
+        {
+            ledger.comparison_ids.insert(pair.comparison_id.clone());
+        }
+    }
+    ledger
+}
+
+#[cfg(test)]
 fn merge_assessment(
     result: &mut ignored_instructions::AssessmentResult,
     previous: ignored_instructions::AssessmentResult,
+) {
+    merge_assessment_page(result, previous, false);
+}
+
+fn merge_assessment_page(
+    result: &mut ignored_instructions::AssessmentResult,
+    previous: ignored_instructions::AssessmentResult,
+    new_content_page: bool,
 ) {
     let reassessed_comparison_ids = result
         .coverage
@@ -726,16 +1073,9 @@ fn merge_assessment(
         .iter()
         .cloned()
         .collect::<std::collections::BTreeSet<_>>();
-    let reassessed_finding_ids = result
-        .coverage
-        .reassessed_finding_ids
-        .iter()
-        .cloned()
-        .collect::<std::collections::BTreeSet<_>>();
     let mut findings: BTreeMap<_, _> = previous
         .findings
         .into_iter()
-        .filter(|finding| !reassessed_finding_ids.contains(&finding.id))
         .map(|finding| (finding.id.clone(), finding))
         .collect();
     for finding in result.findings.drain(..) {
@@ -764,11 +1104,26 @@ fn merge_assessment(
         .coverage
         .eligible_rules
         .max(previous.coverage.eligible_rules);
-    result.coverage.candidate_pairs = result
+    result.coverage.candidate_pairs = if new_content_page {
+        result
+            .coverage
+            .candidate_pairs
+            .saturating_add(previous.coverage.candidate_pairs)
+    } else {
+        result
+            .coverage
+            .candidate_pairs
+            .max(previous.coverage.candidate_pairs)
+    };
+    result.coverage.selected_comparisons = result
         .coverage
-        .candidate_pairs
-        .max(previous.coverage.candidate_pairs);
-    result.coverage.selected_comparisons += previous.coverage.selected_comparisons;
+        .selected_comparisons
+        .saturating_add(previous.coverage.selected_comparisons);
+    result.coverage.sampled_pass |= previous.coverage.sampled_pass;
+    result.coverage.selector_revision = result
+        .coverage
+        .selector_revision
+        .max(previous.coverage.selector_revision);
     result
         .coverage
         .reassessed_comparison_ids
@@ -789,7 +1144,13 @@ fn merge_assessment(
             .find(|current| current.source == prior.source)
         {
             current.eligible_rules = current.eligible_rules.max(prior.eligible_rules);
-            current.candidate_pairs = current.candidate_pairs.max(prior.candidate_pairs);
+            current.candidate_pairs = if new_content_page {
+                current
+                    .candidate_pairs
+                    .saturating_add(prior.candidate_pairs)
+            } else {
+                current.candidate_pairs.max(prior.candidate_pairs)
+            };
             current.selected_comparisons = current
                 .selected_comparisons
                 .saturating_add(prior.selected_comparisons);
@@ -904,7 +1265,7 @@ fn reconcile_prior_findings(
     validated_findings: &mut std::collections::BTreeSet<String>,
     plan: &ignored_instructions::AssessmentPlan,
     page_result: &ignored_instructions::AssessmentResult,
-    more_content: bool,
+    _more_content: bool,
 ) {
     let unassessed: std::collections::BTreeSet<_> = page_result
         .unassessed_comparisons
@@ -918,11 +1279,11 @@ fn reconcile_prior_findings(
             reference.instruction_digest.clone(),
             reference.rule_id.clone(),
         ));
-        if !current_rule && (!plan.current_rule_ids.is_empty() || plan.complete_input) {
-            return false;
+        if !current_rule {
+            return true;
         }
         let Some(action_digest) = plan.current_action_digests.get(&reference.action_id) else {
-            return more_content || validated_findings.contains(&finding.id);
+            return true;
         };
         if !reference.action_digest.is_empty() && reference.action_digest != *action_digest {
             return false;
@@ -968,6 +1329,7 @@ struct PreparedInput {
     #[cfg(test)]
     preparation_timings: PreparationTimings,
     prior_history_complete: bool,
+    future_only: bool,
     page_actions: Vec<ignored_instructions::ContentAction>,
     more_content: bool,
     next_content_cursor: Option<SelectedContentCursor>,
@@ -1006,6 +1368,7 @@ async fn prepare_input(
     content_cursor: Option<&SelectedContentCursor>,
     comparison_after: Option<String>,
     discovery_cache: &mut InstructionDiscoveryCache,
+    pass: SamplingPass<'_>,
 ) -> anyhow::Result<PrepareInputOutcome> {
     let home = home_directory().unwrap_or_else(|| PathBuf::from("."));
     prepare_selected_input_with_home(
@@ -1015,6 +1378,7 @@ async fn prepare_input(
         comparison_after,
         &home,
         discovery_cache,
+        pass,
     )
     .await
 }
@@ -1026,6 +1390,7 @@ async fn prepare_selected_input_with_home(
     comparison_after: Option<String>,
     home: &Path,
     discovery_cache: &mut InstructionDiscoveryCache,
+    pass: SamplingPass<'_>,
 ) -> anyhow::Result<PrepareInputOutcome> {
     #[cfg(test)]
     let mut preparation_timings = PreparationTimings::default();
@@ -1051,12 +1416,105 @@ async fn prepare_selected_input_with_home(
     }
     #[cfg(test)]
     let stage_started = Instant::now();
+    let identity = DiscoveryCacheIdentity {
+        session: candidate.session.key.clone(),
+        incarnation: candidate.incarnation,
+        source_generation: candidate.source_generation,
+        published_fence: candidate.published_fence,
+        source_fingerprint: candidate.source_fingerprint.clone(),
+        format,
+        cwd: candidate.session.cwd.as_deref().map(PathBuf::from),
+        home: home.to_path_buf(),
+    };
+    let mut discovery = match &discovery_cache.entry {
+        Some((cached_identity, discovery)) if *cached_identity == identity => discovery.clone(),
+        _ => {
+            discovery_cache.entry = None;
+            let discovery = discover_instructions_at(&candidate.session, format, home).await;
+            discovery_cache.entry = Some((identity, discovery.clone()));
+            discovery
+        }
+    };
+    let revision_instruction_digests = if pass.backlog && !pass.origin.historical {
+        Vec::new()
+    } else {
+        discovery
+            .snapshots
+            .iter()
+            .map(|item| item.digest.clone())
+            .collect::<Vec<_>>()
+    };
+    let mut boundary_positions = if pass.backlog {
+        pass.origin.boundary_positions.clone()
+    } else {
+        candidate.boundary_positions.clone()
+    };
+    let mut observed_at_ms = None;
+    #[cfg(test)]
+    let legacy_fixture = pass.legacy_fixture;
+    #[cfg(not(test))]
+    let legacy_fixture = false;
+    if pass.backlog && !pass.origin.historical {
+        discovery.snapshots.clear();
+    } else if !candidate.historical
+        && !pass.origin.historical
+        && !legacy_fixture
+        && discovery.scan_complete
+        && discovery.limitations.is_empty()
+    {
+        let digest = ignored_instructions::sha256_hex(&serde_json::to_vec(
+            &discovery
+                .snapshots
+                .iter()
+                .map(|snapshot| (&snapshot.source, &snapshot.digest, snapshot.scope))
+                .collect::<Vec<_>>(),
+        )?);
+        let (observed, at) = store.observe_burn_check_instruction_epoch(
+            &candidate.session.key,
+            candidate.incarnation,
+            candidate.source_generation,
+            &digest,
+            unix_now().saturating_mul(1000),
+        )?;
+        observed_at_ms = Some(at);
+        for (source, index) in observed {
+            let position = boundary_positions.entry(source).or_default();
+            *position = (*position).max(index);
+        }
+    } else if !candidate.historical && !pass.origin.historical && !legacy_fixture {
+        discovery.snapshots.clear();
+        discovery
+            .limitations
+            .push("instruction_observation_unavailable".to_owned());
+    }
+    #[cfg(test)]
+    {
+        preparation_timings.instruction_discovery_us = stage_started.elapsed().as_micros();
+    }
+    #[cfg(test)]
+    let stage_started = Instant::now();
+    let historical = if pass.backlog {
+        pass.origin.historical
+    } else {
+        candidate.historical
+    };
+    let boundary_ms = (if pass.backlog {
+        pass.origin.boundary_at_epoch
+    } else {
+        candidate.boundary_at_epoch
+    })
+    .saturating_mul(1000);
+    let after_ms = if historical {
+        Some(boundary_ms)
+    } else {
+        Some(boundary_ms.max(observed_at_ms.unwrap_or(boundary_ms)))
+    };
     let page = match store.published_turn_content_keyset_selected(
         &candidate.session.key,
         SelectedContentRequest {
             source_generation: candidate.source_generation,
-            after_ms: Some(candidate.boundary_at_epoch.saturating_mul(1000)),
-            source_positions: &candidate.boundary_positions,
+            after_ms,
+            source_positions: &boundary_positions,
             cursor: content_cursor,
             selection: ignored_instructions::IgnoredInstructionsCheck.input_selection(),
         },
@@ -1067,7 +1525,7 @@ async fn prepare_selected_input_with_home(
     let Some(page) = page else {
         return Ok(PrepareInputOutcome::Unavailable);
     };
-    let published = page.content;
+    let mut published = page.content;
     if published.source_generation != Some(candidate.source_generation)
         || published.publication_fence != candidate.published_fence
     {
@@ -1081,30 +1539,15 @@ async fn prepare_selected_input_with_home(
     {
         preparation_timings.content_query_us = stage_started.elapsed().as_micros();
     }
-    #[cfg(test)]
-    let stage_started = Instant::now();
-    let identity = DiscoveryCacheIdentity {
-        session: candidate.session.key.clone(),
-        incarnation: candidate.incarnation,
-        source_generation: candidate.source_generation,
-        published_fence: candidate.published_fence,
-        source_fingerprint: candidate.source_fingerprint.clone(),
-        format,
-        cwd: candidate.session.cwd.as_deref().map(PathBuf::from),
-        home: home.to_path_buf(),
-    };
-    let discovery = match &discovery_cache.entry {
-        Some((cached_identity, discovery)) if *cached_identity == identity => discovery.clone(),
-        _ => {
-            discovery_cache.entry = None;
-            let discovery = discover_instructions_at(&candidate.session, format, home).await;
-            discovery_cache.entry = Some((identity, discovery.clone()));
-            discovery
-        }
-    };
-    #[cfg(test)]
-    {
-        preparation_timings.instruction_discovery_us = stage_started.elapsed().as_micros();
+    if observed_at_ms.is_some() {
+        published.parts.retain(|part| {
+            future_instruction_turn(
+                &boundary_positions,
+                &part.source_key,
+                part.turn_index,
+                part.context_only,
+            )
+        });
     }
     #[cfg(test)]
     let stage_started = Instant::now();
@@ -1167,8 +1610,8 @@ async fn prepare_selected_input_with_home(
     let assessment_input = ignored_instructions::AssessmentInput {
         content,
         prior_history_complete,
-        activity_after_ms: Some(candidate.boundary_at_epoch.saturating_mul(1000)),
-        boundary_positions: candidate.boundary_positions.clone(),
+        activity_after_ms: after_ms,
+        boundary_positions: boundary_positions.clone(),
         source_generation: candidate.source_generation,
         source_fingerprint: candidate.source_fingerprint.clone(),
         incarnation: candidate.incarnation,
@@ -1178,7 +1621,16 @@ async fn prepare_selected_input_with_home(
     let prior_history_complete = assessment_input.prior_history_complete;
     #[cfg(test)]
     let stage_started = Instant::now();
-    let context = ignored_instructions::build_jev_context(&assessment_input)?;
+    let mut ledger = sampling_ledger(
+        &assessment_input.content,
+        pass.pairs,
+        pass.round,
+        candidate.incarnation,
+        pass.backlog,
+    );
+    verify_sampling_ledger(&assessment_input, pass.pairs, &mut ledger)?;
+    let context =
+        ignored_instructions::build_jev_context_with_sampling(&assessment_input, &ledger)?;
     #[cfg(test)]
     {
         preparation_timings.context_build_us = stage_started.elapsed().as_micros();
@@ -1194,12 +1646,7 @@ async fn prepare_selected_input_with_home(
             candidate.published_fence,
             candidate.source_fingerprint,
             candidate.boundary_at_epoch,
-            assessment_input
-                .content
-                .instructions
-                .iter()
-                .map(|item| &item.digest)
-                .collect::<Vec<_>>(),
+            revision_instruction_digests,
             ignored_instructions::ASSESSMENT_PROJECTION_REVISION,
             ignored_instructions::ASSESSMENT_CHUNKING_REVISION,
             ignored_instructions::ASSESSMENT_QUESTION_REVISION,
@@ -1243,12 +1690,22 @@ async fn prepare_selected_input_with_home(
         #[cfg(test)]
         preparation_timings,
         prior_history_complete,
+        future_only: observed_at_ms.is_some(),
         page_actions,
         more_content,
         next_content_cursor,
         #[cfg(test)]
         next_content_offset,
     })))
+}
+
+fn future_instruction_turn(
+    positions: &BTreeMap<String, u64>,
+    source: &str,
+    index: u64,
+    context_only: bool,
+) -> bool {
+    context_only || positions.get(source).is_some_and(|before| index > *before)
 }
 
 #[cfg(test)]
@@ -1270,6 +1727,18 @@ async fn prepare_input_with_home(
             comparison_after.clone(),
             home,
             discovery_cache,
+            SamplingPass {
+                pairs: &[],
+                round: 0,
+                backlog: false,
+                origin: &BurnCheckSampleOrigin {
+                    incarnation: candidate.incarnation,
+                    boundary_positions: candidate.boundary_positions.clone(),
+                    boundary_at_epoch: candidate.boundary_at_epoch,
+                    historical: candidate.historical,
+                },
+                legacy_fixture: true,
+            },
         )
         .await?;
         let PrepareInputOutcome::Ready(mut input) = outcome else {
@@ -1327,6 +1796,7 @@ async fn save_outcome(
     outcome: JevExecutionOutcome<ignored_instructions::AssessmentResult>,
     progress_json: &str,
     historical: bool,
+    sampled_pairs: &[BurnCheckSampledPair],
 ) -> anyhow::Result<()> {
     let failed = outcome.failure.is_some();
     ::tracing::debug!(
@@ -1383,6 +1853,9 @@ async fn save_outcome(
     let store_elapsed_ms = store_started.elapsed().as_millis();
     let event_started = Instant::now();
     if published {
+        if !failed {
+            store.save_burn_check_sampled_pairs(input, sampled_pairs)?;
+        }
         ::tracing::debug!(
             event = "checks_report_changed_emitted",
             source = "jev_worker",
@@ -1439,6 +1912,16 @@ mod settings_tests {
                 "turn_rowid": turn_index + 1, "part_index": 0}
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn source_positions_exclude_old_timestamped_actions_after_an_edit() {
+        let positions = BTreeMap::from([("source".to_owned(), 2)]);
+        assert!(!future_instruction_turn(&positions, "source", 1, false));
+        assert!(!future_instruction_turn(&positions, "source", 2, false));
+        assert!(future_instruction_turn(&positions, "source", 3, false));
+        assert!(!future_instruction_turn(&positions, "new-source", 0, false));
+        assert!(future_instruction_turn(&positions, "source", 1, true));
     }
 
     #[test]
@@ -1503,7 +1986,7 @@ mod settings_tests {
         assert_eq!(selected.cursor, Some(selected_cursor(511)));
         assert!(restored.comparison_after.is_none());
         let mut next_result = result(&["next-page-action"]);
-        merge_assessment(&mut next_result, restored.result.unwrap());
+        merge_assessment_page(&mut next_result, restored.result.unwrap(), false);
         assert_eq!(next_result.findings.len(), 2);
         assert!(
             next_result
@@ -1511,6 +1994,46 @@ mod settings_tests {
                 .iter()
                 .any(|finding| finding.reference.action_id == "prior-page-action")
         );
+    }
+
+    #[test]
+    fn backlog_transition_survives_a_checkpoint_without_reusing_page_answers() {
+        let context = JevSessionContext {
+            input_revision: "revision".into(),
+            session_identity: "session".into(),
+            check_context: serde_json::Value::Null,
+            limitations: Vec::new(),
+            evidence_store: Default::default(),
+            reference_snapshots: Vec::new(),
+        };
+        let mut cursor = AssessmentCursor {
+            input_revision: Some("revision".into()),
+            round: 2,
+            result: Some(result(&["prior"])),
+            ..Default::default()
+        };
+        let mut selected = SelectedContentProgress {
+            revision: SELECTED_CONTENT_PROGRESS_REVISION,
+            cursor: Some(selected_cursor(255)),
+        };
+        cursor.backlog = true;
+        selected.cursor = None;
+        advance_selected_assessment_page(&mut cursor, &mut selected, false, None, None);
+        let saved = serialize_selected_cursor_progress(
+            &cursor,
+            &cursor.progress,
+            &[],
+            &context,
+            &mut BTreeMap::new(),
+            Some(&selected),
+        )
+        .unwrap();
+        let (restored, compact, position) = parse_checkpoint(&saved).unwrap();
+        assert!(restored.backlog);
+        assert_eq!(restored.round, 2);
+        assert_eq!(restored.result.unwrap().findings.len(), 1);
+        assert!(compact.unwrap().is_empty());
+        assert!(position.unwrap().cursor.is_none());
     }
 
     #[test]
@@ -1632,6 +2155,10 @@ mod settings_tests {
                         action_timestamp_ms: Some(1),
                         action_stable: true,
                     },
+                    instruction_excerpt: "Test instruction.".into(),
+                    instruction_excerpt_truncated: false,
+                    action_excerpt: "Test action.".into(),
+                    action_excerpt_truncated: false,
                     nearby_context_ids: Vec::new(),
                     counterevidence_ids: Vec::new(),
                     certainty: FindingCertainty::Possible,
@@ -1651,6 +2178,8 @@ mod settings_tests {
                 skipped_rules: Vec::new(),
                 skipped_actions: Vec::new(),
                 processing_limit_reached: false,
+                sampled_pass: false,
+                selector_revision: 1,
                 limitations: Vec::new(),
                 reassessed_comparison_ids: Vec::new(),
                 reassessed_rule_ids: Vec::new(),
@@ -1725,6 +2254,8 @@ mod settings_tests {
                 skipped_rules: Vec::new(),
                 skipped_actions: Vec::new(),
                 processing_limit_reached: false,
+                sampled_pass: false,
+                selector_revision: 1,
                 limitations: Vec::new(),
                 reassessed_comparison_ids: Vec::new(),
                 reassessed_rule_ids: Vec::new(),
@@ -1967,19 +2498,19 @@ mod settings_tests {
         current.coverage.reassessed_comparison_ids = vec!["comparison".to_owned()];
         current.coverage.reassessed_rule_ids = vec!["rule".to_owned()];
 
-        merge_assessment(&mut current, previous);
+        merge_assessment_page(&mut current, previous, false);
 
         assert!(current.unassessed_comparisons.is_empty());
         assert!(current.pending_rules.is_empty());
     }
 
     #[test]
-    fn compliant_reassessment_removes_only_the_exact_prior_finding() {
+    fn later_range_does_not_erase_a_finding_in_an_earlier_range() {
         let previous = result(&["reassessed", "unrelated"]);
         let mut current = result(&[]);
         current.coverage.reassessed_finding_ids = vec!["reassessed".to_owned()];
 
-        merge_assessment(&mut current, previous);
+        merge_assessment_page(&mut current, previous, false);
 
         assert_eq!(
             current
@@ -1987,14 +2518,200 @@ mod settings_tests {
                 .iter()
                 .map(|finding| finding.id.as_str())
                 .collect::<Vec<_>>(),
-            ["unrelated"]
+            ["reassessed", "unrelated"]
+        );
+    }
+
+    #[test]
+    fn content_pages_add_candidate_pairs_but_comparison_pages_do_not() {
+        let mut previous = result(&["early"]);
+        previous.coverage.candidate_pairs = 4;
+        previous.coverage.selected_comparisons = 1;
+        previous.coverage.reassessed_comparison_ids = vec!["early-pair".into()];
+        let mut next = result(&["later"]);
+        next.coverage.candidate_pairs = 3;
+        next.coverage.selected_comparisons = 1;
+        next.coverage.reassessed_comparison_ids = vec!["later-pair".into()];
+        merge_assessment_page(&mut next, previous.clone(), true);
+        assert_eq!(next.coverage.candidate_pairs, 7);
+        assert_eq!(next.coverage.selected_comparisons, 2);
+        assert_eq!(next.coverage.unselected_pairs, 5);
+
+        let mut comparison_page = result(&["later"]);
+        comparison_page.coverage.candidate_pairs = 4;
+        comparison_page.coverage.reassessed_comparison_ids = vec!["later-pair".into()];
+        merge_assessment_page(&mut comparison_page, previous, false);
+        assert_eq!(comparison_page.coverage.candidate_pairs, 4);
+        assert_eq!(comparison_page.coverage.selected_comparisons, 2);
+    }
+
+    #[test]
+    fn bounded_pass_stops_after_its_selected_comparison_budget() {
+        assert!(continue_content_pass(true, 255));
+        assert!(!continue_content_pass(true, 256));
+        assert!(!continue_content_pass(true, 1024));
+        assert!(!continue_content_pass(false, 0));
+    }
+
+    #[test]
+    fn final_comparison_page_uses_only_the_remaining_budget() {
+        let reference = result(&["action"]).findings.remove(0).reference;
+        let mut assessment = plan(&reference);
+        let template = assessment.comparisons[0].clone();
+        assessment.comparisons = (0..256)
+            .map(|index| {
+                let mut comparison = template.clone();
+                comparison.id = format!("pair-{index}");
+                comparison
+            })
+            .collect();
+        assessment.coverage.candidate_pairs = 400;
+        assessment.coverage.selected_comparisons = 256;
+        let mut context = JevSessionContext {
+            input_revision: assessment.input_revision.clone(),
+            session_identity: "session".into(),
+            check_context: serde_json::json!({"assessment_plan": assessment}),
+            limitations: Vec::new(),
+            evidence_store: Default::default(),
+            reference_snapshots: Vec::new(),
+        };
+        limit_comparison_page(&mut context, 24).unwrap();
+        let selected: AssessmentPlan =
+            serde_json::from_value(context.check_context["assessment_plan"].clone()).unwrap();
+        assert_eq!(selected.comparisons.len(), 24);
+        assert_eq!(selected.coverage.selected_comparisons, 24);
+        assert_eq!(selected.coverage.unselected_pairs, 376);
+        assert!(selected.coverage.sampled_pass);
+    }
+
+    #[test]
+    fn sampled_pair_dependency_changes_when_earlier_evidence_changes() {
+        let reference = result(&["action"]).findings.remove(0).reference;
+        let assessment = plan(&reference);
+        let original = &assessment.comparisons[0];
+        let digest = comparison_dependency(&assessment, original, 1).unwrap();
+        let mut changed = original.clone();
+        changed.context.push(CounterEvidence {
+            action_id: "earlier".into(),
+            text: "Earlier request".into(),
+            ..changed.action.clone()
+        });
+        assert_ne!(
+            comparison_dependency(&assessment, &changed, 1).unwrap(),
+            digest
+        );
+        assert_ne!(
+            comparison_dependency(&assessment, original, 2).unwrap(),
+            digest
+        );
+    }
+
+    #[test]
+    fn sampling_ledger_only_reuses_matching_previous_round_dependencies() {
+        let previous = result(&["action"]);
+        let reference = &previous.findings[0].reference;
+        let pair = BurnCheckSampledPair {
+            comparison_id: "pair".into(),
+            dependency_digest: "work".into(),
+            incarnation: 1,
+            action_id: reference.action_id.clone(),
+            action_digest: reference.action_digest.clone(),
+            instruction_digest: reference.instruction_digest.clone(),
+            selector_revision: 2,
+            round: 0,
+            assessed: true,
+        };
+        let mut content = ignored_instructions::SessionContentEvidence {
+            session_identity_digest: "session".into(),
+            source_format: SourceFormat::ClaudeJsonl,
+            publication_fence: 1,
+            selected_input_digest: "selection".into(),
+            actions: Vec::new(),
+            instructions: Vec::new(),
+            complete: true,
+            limitations: Vec::new(),
+            excluded_thinking_parts: 0,
+            field_availability: Vec::new(),
+        };
+        let action = ignored_instructions::ContentAction {
+            reference: ignored_instructions::ContentEventReference {
+                id: reference.action_id.clone(),
+                source_key_digest: "source".into(),
+                thread_digest: "thread".into(),
+                turn_index: 1,
+                native_record_id: None,
+                part_index: 0,
+                stable: true,
+            },
+            timestamp_ms: Some(1),
+            turn_role: "assistant".into(),
+            turn_scope: "main".into(),
+            authority: "assistant".into(),
+            kind: "assistant_text".into(),
+            text: "Action".into(),
+            tool_name: None,
+            tool_call_id: None,
+            normalized_fields: None,
+            metadata: Default::default(),
+            truncated: false,
+            context_only: false,
+        };
+        content.actions.push(action);
+        content.instructions.push(
+            ignored_instructions::snapshot_from_text(
+                "project:AGENTS.md",
+                "Do this.".into(),
+                InstructionProvenance::RecordedInjection,
+                InstructionScope::Project,
+            )
+            .unwrap(),
+        );
+        let pair = BurnCheckSampledPair {
+            action_digest: ignored_instructions::content_action_digest(&content.actions[0]),
+            instruction_digest: content.instructions[0].digest.clone(),
+            ..pair
+        };
+        assert!(
+            sampling_ledger(&content, std::slice::from_ref(&pair), 0, 1, false)
+                .comparison_ids
+                .is_empty()
+        );
+        assert!(
+            sampling_ledger(&content, std::slice::from_ref(&pair), 1, 1, false)
+                .comparison_ids
+                .contains("pair")
+        );
+        let pending = BurnCheckSampledPair {
+            assessed: false,
+            ..pair.clone()
+        };
+        assert!(
+            sampling_ledger(&content, std::slice::from_ref(&pending), 0, 1, true)
+                .comparison_ids
+                .contains("pair")
+        );
+        assert!(
+            sampling_ledger(&content, std::slice::from_ref(&pending), 1, 1, false)
+                .comparison_ids
+                .is_empty()
+        );
+        assert!(
+            sampling_ledger(&content, std::slice::from_ref(&pair), 1, 2, false)
+                .comparison_ids
+                .is_empty()
+        );
+        content.actions[0].text = "changed".into();
+        assert!(
+            sampling_ledger(&content, &[pair], 1, 1, false)
+                .known_action_ids
+                .is_empty()
         );
     }
 
     #[test]
     fn durable_ranges_retain_distinct_findings_and_deduplicate_overlap() {
         let mut later = result(&["overlap", "later"]);
-        merge_assessment(&mut later, result(&["early", "overlap"]));
+        merge_assessment_page(&mut later, result(&["early", "overlap"]), false);
         assert_eq!(
             later
                 .findings
@@ -2009,6 +2726,8 @@ mod settings_tests {
             content_offset: 1,
             comparison_after: Some("cursor".to_owned()),
             progress: JevRunProgress::default(),
+            round: 0,
+            backlog: false,
             result: Some(later),
             prior_findings: Vec::new(),
             validated_prior_findings: Default::default(),

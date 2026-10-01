@@ -46,8 +46,59 @@ pub(super) fn reduce_with_completion(
             unassessed_comparisons.push(comparison.id.clone());
             continue;
         };
+        if final_judgment.applicability == "not_applicable"
+            && (comparison.action.truncated
+                || comparison.action_text_start != 0
+                || comparison.rule_text_start != 0
+                || comparison.rule_text_end != comparison.rule_text.len())
+            && !initial.answers.contains_key(QUESTION_RELATIONSHIP)
+        {
+            unassessed_comparisons.push(comparison.id.clone());
+            continue;
+        }
+        if final_judgment.applicability == "not_applicable"
+            && probability(&final_judgment, QUESTION_APPLICABILITY, "not_applicable")
+                >= LIKELY_THRESHOLD
+            && !comparison.action.truncated
+            && comparison.action_text_start == 0
+            && comparison.rule_text_start == 0
+            && comparison.rule_text_end == comparison.rule_text.len()
+            && !initial.answers.contains_key(QUESTION_RELATIONSHIP)
+            && !initial.answers.contains_key(QUESTION_EVIDENCE_BASIS)
+            && !plan
+                .observable_obligations
+                .get(&comparison.id)
+                .is_some_and(|obligation| {
+                    obligation.read_order_required && obligation.edit_scope_matches == Some(true)
+                        || obligation
+                            .literal_policies
+                            .iter()
+                            .any(|binding| {
+                                binding.exact_match == Some(true)
+                                    || binding.policy
+                                        == crate::analysis::jev::exact_facts::LiteralPolicy::ResponseLiteral
+                                    || (comparison.action.kind == "assistant_text"
+                                        && matches!(binding.policy,
+                                            crate::analysis::jev::exact_facts::LiteralPolicy::ConstructBan
+                                            | crate::analysis::jev::exact_facts::LiteralPolicy::CommandBan))
+                            })
+                })
+        {
+            reassessed_finding_ids.push(finding_id_for_reference(&comparison.reference));
+            continue;
+        }
         if let Some(obligation) = plan.observable_obligations.get(&comparison.id) {
             apply_literal_facts(comparison, obligation, initial, &mut final_judgment);
+            if obligation.read_order_required
+                && obligation.candidate_family == "edit"
+                && obligation.edit_scope_matches == Some(true)
+            {
+                final_judgment.applicability = "applies".to_owned();
+                final_judgment.probabilities.insert(
+                    QUESTION_APPLICABILITY.to_owned(),
+                    BTreeMap::from([("applies".to_owned(), 1.0)]),
+                );
+            }
             let inactive_result_condition = obligation.condition_evidence
                 == crate::analysis::jev::obligations::ConditionEvidence::Result
                 && final_judgment.applicability == "not_applicable"
@@ -117,13 +168,6 @@ pub(super) fn reduce_with_completion(
             {
                 continue;
             }
-            if obligation.read_order_required && obligation.edit_scope_matches == Some(true) {
-                final_judgment.applicability = "applies".to_owned();
-                final_judgment.probabilities.insert(
-                    QUESTION_APPLICABILITY.to_owned(),
-                    BTreeMap::from([("applies".to_owned(), 1.0)]),
-                );
-            }
             if obligation.read_order_required
                 && (final_judgment.applicability == "applies"
                     || obligation.candidate_family == "read")
@@ -191,7 +235,13 @@ pub(super) fn reduce_with_completion(
             });
         }
         let status = classify_comparison(comparison, &final_judgment);
-        if status != RuleStatus::Unassessed {
+        if matches!(status, RuleStatus::Likely | RuleStatus::Possible)
+            || (status == RuleStatus::NoIssue
+                && comparison.rule_text_start == 0
+                && comparison.rule_text_end == comparison.rule_text.len()
+                && comparison.action_text_start == 0
+                && !comparison.action.truncated)
+        {
             reassessed_finding_ids.push(finding_id_for_reference(&comparison.reference));
         }
         match status {
@@ -212,9 +262,25 @@ pub(super) fn reduce_with_completion(
                 }
                 finding_limits.sort();
                 finding_limits.dedup();
+                let (instruction_excerpt, instruction_excerpt_truncated) =
+                    super::super::planning::bounded_text(
+                        super::super::planning::rule_text_fragment(comparison),
+                        2048,
+                    );
+                let action_text = comparison
+                    .action
+                    .text
+                    .get(comparison.action_text_start..comparison.action_text_end)
+                    .unwrap_or(&comparison.action.text);
+                let (action_excerpt, action_excerpt_truncated) =
+                    super::super::planning::bounded_text(action_text, 2048);
                 let finding = AssessmentFinding {
                     id: finding_id_for_reference(&comparison.reference),
                     reference: comparison.reference.clone(),
+                    instruction_excerpt,
+                    instruction_excerpt_truncated,
+                    action_excerpt,
+                    action_excerpt_truncated,
                     nearby_context_ids: comparison
                         .context
                         .iter()
@@ -461,6 +527,36 @@ fn judgment(
         })
         .collect();
     let applicability = selected(result, QUESTION_APPLICABILITY)?;
+    if applicability == "not_applicable"
+        && crate::analysis::jev::classification::confident_choice(
+            result,
+            QUESTION_APPLICABILITY,
+            LIKELY_THRESHOLD,
+        ) == Some("not_applicable")
+        && !result.answers.contains_key(QUESTION_RELATIONSHIP)
+        && !result.answers.contains_key(QUESTION_EVIDENCE_BASIS)
+    {
+        return Some(ComparisonJudgment {
+            applicability,
+            relationship: "unrelated".to_owned(),
+            evidence_basis: "self_contained".to_owned(),
+            completion: CompletionCoverage::NotObligation,
+            probabilities: BTreeMap::from([
+                (
+                    QUESTION_RELATIONSHIP.to_owned(),
+                    BTreeMap::from([("unrelated".to_owned(), 1.0)]),
+                ),
+                (
+                    QUESTION_EVIDENCE_BASIS.to_owned(),
+                    BTreeMap::from([("self_contained".to_owned(), 1.0)]),
+                ),
+                (
+                    QUESTION_APPLICABILITY.to_owned(),
+                    probabilities[QUESTION_APPLICABILITY].clone(),
+                ),
+            ]),
+        });
+    }
     let applies = probabilities
         .get(QUESTION_APPLICABILITY)
         .and_then(|distribution| distribution.get("applies"))

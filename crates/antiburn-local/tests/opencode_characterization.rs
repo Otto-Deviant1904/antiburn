@@ -1815,7 +1815,7 @@ fn native_edit_ranges_and_partial_requests_survive_selected_storage() {
     for (index, part) in [
         json!({"type":"tool","tool":"edit","callID":"edit","state":{"status":"completed","input":{"filePath":"src/é.rs","cwd":"/repo","oldString":"old","newString":"PRIVATE_EDIT_BODY"}}}),
         json!({"type":"tool","tool":"bash","callID":"partial","state":{"status":"running","input":{"command":"x".repeat(antiburn_local::analysis::MAX_CONTENT_PART_BYTES + 1)}}}),
-        json!({"type":"tool","tool":"apply_patch","callID":"patch","state":{"status":"future-state","input":{"patch":"*** Begin Patch\n*** Update File: src/a.rs\n+text\n*** End Patch"}}}),
+        json!({"type":"tool","tool":"apply_patch","callID":"patch","state":{"status":"future-state","input":{"patchText":"*** Begin Patch\n*** Update File: src/a.rs\n+text\n*** End Patch"}}}),
     ].iter().enumerate() {
         insert_part(&connection, &format!("p{index}"), "m1", "root", 1001 + index as i64, &part.to_string());
     }
@@ -1893,7 +1893,24 @@ fn native_edit_ranges_and_partial_requests_survive_selected_storage() {
                 .find(|part| part.part.tool_call_id.as_deref() == Some("patch"))
                 .unwrap();
             assert_eq!(patch.part.metadata.state, JevOperationState::Unknown);
-            assert!(patch.part.metadata.bindings.is_empty());
+            assert_eq!(patch.part.metadata.bindings.len(), 1);
+            assert_eq!(patch.part.metadata.bindings[0].field, field);
+            assert!(
+                patch.part.metadata.bindings[0]
+                    .pointer
+                    .ends_with("/patchText")
+            );
+            assert!(!patch.part.normalized_fields.as_ref().unwrap().malformed);
+            let selected = &patch.part.normalized_fields.as_ref().unwrap().values[&field];
+            if field == JevInputField::FileEditPath {
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(selected).unwrap()["paths"],
+                    json!(["src/a.rs"])
+                );
+                assert!(!selected.contains("+text"));
+            } else {
+                assert!(selected.contains("+text"));
+            }
         }
     });
 }

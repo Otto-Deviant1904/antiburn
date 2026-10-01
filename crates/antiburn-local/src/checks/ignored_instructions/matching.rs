@@ -55,13 +55,15 @@ pub(super) fn earlier_read_only_actions(
     content: &SessionContentEvidence,
 ) -> BTreeMap<String, usize> {
     let branches = branch_order_index(&content.actions);
+    let actions_by_id = content
+        .actions
+        .iter()
+        .map(|action| (action.reference.id.as_str(), action))
+        .collect::<BTreeMap<_, _>>();
     comparisons
         .iter()
         .filter_map(|comparison| {
-            let candidate = content
-                .actions
-                .iter()
-                .find(|event| event.reference.id == comparison.action.action_id)?;
+            let candidate = actions_by_id.get(comparison.action.action_id.as_str())?;
             let earlier = branches
                 .actions_by_branch
                 .get(&(
@@ -107,13 +109,16 @@ pub(super) fn exact_read_orders(
     prior_history_complete: bool,
 ) -> BTreeMap<String, Vec<ReadRequestOrder>> {
     let branches = branch_order_index(&content.actions);
+    let actions_by_id = content
+        .actions
+        .iter()
+        .map(|action| (action.reference.id.as_str(), action))
+        .collect::<BTreeMap<_, _>>();
     comparisons
         .iter()
         .map(|comparison| {
-            let candidate_position = content
-                .actions
-                .iter()
-                .find(|event| event.reference.id == comparison.action.action_id)
+            let candidate_position = actions_by_id
+                .get(comparison.action.action_id.as_str())
                 .map(|event| (event.reference.turn_index, event.reference.part_index));
             let paths =
                 crate::analysis::jev::exact_facts::reference_path_candidates(&comparison.rule_text);
@@ -163,12 +168,12 @@ pub(super) fn exact_read_orders(
                         let position = (event.reference.turn_index, event.reference.part_index);
                         let before = position < candidate_position;
                         if before
+                            && is_read
                             && (facts.malformed
-                                || (is_read
-                                    && (facts.paths.is_empty()
-                                        || !event.reference.stable
-                                        || event.tool_call_id.is_none()
-                                        || event.truncated)))
+                                || facts.paths.is_empty()
+                                || !event.reference.stable
+                                || event.tool_call_id.is_none()
+                                || event.truncated)
                         {
                             order.paths_known = false;
                         }

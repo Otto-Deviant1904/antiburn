@@ -77,7 +77,74 @@ pub const MIGRATIONS: &[&str] = &[
     V64,
     antiburn_local::analysis::TURN_SCHEMA_V11_SQL,
     V66,
+    V67,
+    V68,
+    V69,
 ];
+
+const V69: &str = r#"
+CREATE TABLE burn_check_sampled_pair (
+    environment_key TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    check_id TEXT NOT NULL,
+    comparison_id TEXT NOT NULL,
+    dependency_digest TEXT NOT NULL,
+    incarnation INTEGER NOT NULL,
+    action_id TEXT NOT NULL,
+    action_digest TEXT NOT NULL,
+    instruction_digest TEXT NOT NULL,
+    selector_revision INTEGER NOT NULL,
+    round INTEGER NOT NULL,
+    assessed INTEGER NOT NULL CHECK (assessed IN (0, 1)),
+    PRIMARY KEY (environment_key, agent, session_id, check_id, comparison_id, dependency_digest),
+    FOREIGN KEY (environment_key, agent, session_id)
+      REFERENCES session (environment_key, agent, session_id) ON DELETE CASCADE
+) STRICT;
+CREATE TABLE burn_check_sample_origin (
+    environment_key TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    check_id TEXT NOT NULL,
+    incarnation INTEGER NOT NULL,
+    boundary_positions_json TEXT NOT NULL CHECK (json_valid(boundary_positions_json)),
+    boundary_at_epoch INTEGER NOT NULL,
+    historical INTEGER NOT NULL CHECK (historical IN (0, 1)),
+    PRIMARY KEY (environment_key, agent, session_id, check_id),
+    FOREIGN KEY (environment_key, agent, session_id)
+      REFERENCES session (environment_key, agent, session_id) ON DELETE CASCADE
+) STRICT;
+"#;
+
+const V68: &str = r#"
+CREATE TABLE burn_check_instruction_epoch (
+    environment_key TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    instruction_digest TEXT NOT NULL,
+    incarnation INTEGER NOT NULL,
+    source_generation INTEGER NOT NULL,
+    positions_json TEXT NOT NULL CHECK(json_valid(positions_json)),
+    observed_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (environment_key, agent, session_id),
+    FOREIGN KEY (environment_key, agent, session_id)
+      REFERENCES session (environment_key, agent, session_id) ON DELETE CASCADE
+) STRICT;
+"#;
+
+const V67: &str = r#"
+CREATE TABLE burn_check_work_answer (
+    environment_key TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    check_id TEXT NOT NULL,
+    reuse_scope TEXT NOT NULL,
+    item_marker TEXT NOT NULL,
+    result_json TEXT NOT NULL CHECK(json_valid(result_json)),
+    updated_at_epoch INTEGER NOT NULL,
+    PRIMARY KEY (environment_key, agent, session_id, check_id, reuse_scope, item_marker)
+) STRICT;
+"#;
 
 const V66: &str = r#"
 CREATE TABLE burn_check_usage_reservation (

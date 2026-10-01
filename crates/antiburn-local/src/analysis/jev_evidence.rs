@@ -501,6 +501,7 @@ fn value_strings(value: &Value, keys: &[&str]) -> Vec<String> {
 
 fn selected_path_input(text: &str) -> Option<String> {
     let value = unwrap_arguments(parse_tool_input(text));
+    let patch = patch_text(&value);
     let mut paths = value_strings(
         &value,
         &[
@@ -520,36 +521,28 @@ fn selected_path_input(text: &str) -> Option<String> {
             "to",
         ],
     );
-    if paths.is_empty() {
-        let patch = value
-            .as_str()
-            .or_else(|| value.get("patch").and_then(Value::as_str))
-            .or_else(|| value.get("input").and_then(Value::as_str));
-        if let Some(patch) = patch {
-            for line in patch.lines() {
-                let path = ["*** Update File: ", "*** Add File: ", "*** Delete File: "]
-                    .iter()
-                    .find_map(|prefix| line.strip_prefix(prefix))
-                    .or_else(|| line.strip_prefix("*** Move to: "))
-                    .or_else(|| line.strip_prefix("+++ b/"))
-                    .or_else(|| line.strip_prefix("--- a/"));
-                if let Some(path) = path.filter(|path| !path.is_empty() && *path != "/dev/null") {
-                    paths.push(path.to_owned());
-                }
+    if paths.is_empty()
+        && let Some(patch) = patch
+    {
+        for line in patch.lines() {
+            let path = ["*** Update File: ", "*** Add File: ", "*** Delete File: "]
+                .iter()
+                .find_map(|prefix| line.strip_prefix(prefix))
+                .or_else(|| line.strip_prefix("*** Move to: "))
+                .or_else(|| line.strip_prefix("+++ b/"))
+                .or_else(|| line.strip_prefix("--- a/"));
+            if let Some(path) = path.filter(|path| !path.is_empty() && *path != "/dev/null") {
+                paths.push(path.to_owned());
             }
-            paths.sort();
-            paths.dedup();
         }
+        paths.sort();
+        paths.dedup();
     }
     if paths.is_empty() {
         return None;
     }
     let mut selected = serde_json::json!({"paths": paths});
-    if let Some(patch) = value
-        .as_str()
-        .or_else(|| value.get("patch").and_then(Value::as_str))
-        .or_else(|| value.get("input").and_then(Value::as_str))
-    {
+    if let Some(patch) = patch {
         let operations = crate::analysis::jev::edit_hunks::apply_patch_path_operations(patch);
         if !operations.is_empty() {
             selected["operations"] = serde_json::to_value(operations).ok()?;
@@ -610,9 +603,7 @@ fn selected_edit_input(text: &str, include_path: bool, include_content: bool) ->
             }
         }
         if !has_edit_content {
-            let patch = value
-                .as_str()
-                .or_else(|| value.get("patch").and_then(Value::as_str));
+            let patch = patch_text(&value);
             if let Some(patch) = patch {
                 let patch_content = patch
                     .lines()
@@ -633,6 +624,14 @@ fn selected_edit_input(text: &str, include_path: bool, include_content: bool) ->
         }
     }
     (!selected.is_empty()).then(|| Value::Object(selected).to_string())
+}
+
+fn patch_text(value: &Value) -> Option<&str> {
+    value
+        .as_str()
+        .or_else(|| value.get("patchText").and_then(Value::as_str))
+        .or_else(|| value.get("patch").and_then(Value::as_str))
+        .or_else(|| value.get("input").and_then(Value::as_str))
 }
 
 fn select_edit_operations(value: &Value) -> Option<Value> {
@@ -1593,6 +1592,32 @@ mod tests {
         assert!(body.contains("-old"));
         assert!(!body.contains("src/old.rs"));
         assert!(!body.contains("src/new.rs"));
+    }
+
+    #[test]
+    fn opencode_native_patch_text_selects_paths_operations_and_optional_content() {
+        let patch = "*** Begin Patch\n*** Update File: src/old.rs\n*** Move to: src/new.rs\n@@\n-old\n+new\n*** Add File: src/added.rs\n+added\n*** Delete File: src/deleted.rs\n*** End Patch";
+        let native = serde_json::json!({"patchText":patch}).to_string();
+        let fields = normalize_tool_input("apply_patch", &native);
+        assert!(!fields.malformed);
+        let selected: Value =
+            serde_json::from_str(&fields.values[&JevInputField::FileEditPath]).unwrap();
+        assert_eq!(
+            selected["paths"],
+            serde_json::json!(["src/added.rs", "src/deleted.rs", "src/new.rs", "src/old.rs"])
+        );
+        assert_eq!(
+            selected["operations"],
+            serde_json::json!([
+                {"operation":"move","from":"src/old.rs","to":"src/new.rs"},
+                {"operation":"add","path":"src/added.rs"},
+                {"operation":"delete","path":"src/deleted.rs"}
+            ])
+        );
+        assert!(!fields.values[&JevInputField::FileEditPath].contains("+added"));
+        assert!(fields.values[&JevInputField::FileEditContent].contains("+added"));
+        assert!(normalize_tool_input("apply_patch", "{}").malformed);
+        assert!(normalize_tool_input("apply_patch", r#"{"patchText":""}"#).malformed);
     }
 
     #[test]

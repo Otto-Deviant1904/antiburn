@@ -89,6 +89,16 @@ function subscribe(listener: () => void) {
 function historyStatus(state: CheckAvailability): string | null {
   const { backfill } = state
   const waiting = backfill.ready + backfill.queued
+  const finished =
+    backfill.total > 0 &&
+    backfill.completed === backfill.total &&
+    backfill.running === 0 &&
+    waiting === 0 &&
+    backfill.waitingForData === 0 &&
+    backfill.waitingForIdle === 0
+  if (finished) {
+    return `Finished checking ${backfill.completed.toLocaleString()} ${backfill.completed === 1 ? "session" : "sessions"}`
+  }
   const parts = [
     waiting > 0 ? `${waiting} waiting to be checked` : null,
     backfill.waitingForData > 0
@@ -97,7 +107,7 @@ function historyStatus(state: CheckAvailability): string | null {
     backfill.waitingForIdle > 0
       ? `${backfill.waitingForIdle} waiting for session to be idle`
       : null,
-    backfill.completed > 0 ? `${backfill.completed} checked` : null,
+    backfill.completed > 0 ? `${backfill.completed} sessions checked` : null,
     backfill.skipped > 0 ? `${backfill.skipped} not eligible` : null,
     backfill.failed > 0 ? `${backfill.failed} failed` : null,
   ].filter((part): part is string => part !== null)

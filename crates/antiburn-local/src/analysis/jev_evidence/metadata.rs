@@ -81,6 +81,76 @@ pub(crate) fn native_input_bindings(
         let Some(text) = value.as_str() else {
             continue;
         };
+        if matches!(key.as_str(), "patchText" | "patch") {
+            let selected_paths = fields
+                .values
+                .get(&JevInputField::FileEditPath)
+                .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+                .and_then(|value| {
+                    value
+                        .get("paths")
+                        .and_then(serde_json::Value::as_array)
+                        .cloned()
+                })
+                .unwrap_or_default();
+            let selected_content = fields
+                .values
+                .get(&JevInputField::FileEditContent)
+                .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+                .and_then(|value| {
+                    value
+                        .get("patch_content")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                });
+            let mut offset = 0;
+            for line in text.split_inclusive('\n').take(256) {
+                let trimmed = line.trim_end_matches('\n');
+                let path = [
+                    "*** Update File: ",
+                    "*** Add File: ",
+                    "*** Delete File: ",
+                    "*** Move to: ",
+                ]
+                .iter()
+                .find_map(|prefix| trimmed.strip_prefix(prefix));
+                let selected = path
+                    .filter(|path| {
+                        selected_paths
+                            .iter()
+                            .any(|item| item.as_str() == Some(*path))
+                    })
+                    .map(|path| {
+                        (
+                            JevInputField::FileEditPath,
+                            offset + trimmed.len() - path.len(),
+                            path.len(),
+                        )
+                    })
+                    .or_else(|| {
+                        selected_content
+                            .as_ref()
+                            .filter(|content| {
+                                (trimmed.starts_with('+')
+                                    || trimmed.starts_with('-')
+                                    || trimmed.starts_with(' '))
+                                    && content.lines().any(|part| part == trimmed)
+                            })
+                            .map(|_| (JevInputField::FileEditContent, offset, trimmed.len()))
+                    });
+                if let Some((field, start, len)) = selected {
+                    bindings.push(JevNativeFieldRange {
+                        field,
+                        container,
+                        pointer: format!("{pointer}/{key}"),
+                        start,
+                        end: start + len,
+                    });
+                }
+                offset += line.len();
+            }
+            continue;
+        }
         let field = match key.as_str() {
             "command" | "cmd" | "script" | "code" => JevInputField::BashCommandInput,
             "cwd" | "workdir" => {
@@ -411,15 +481,19 @@ mod tests {
         let patch = serde_json::json!({"patch":"*** Begin Patch\n*** Update File: src/a.rs\n+é\n*** End Patch"});
         let fields =
             crate::analysis::jev_evidence::normalize_tool_input("apply_patch", &patch.to_string());
-        assert!(
-            native_input_bindings(
-                &patch,
-                "/input",
-                &fields,
-                JevNativeFieldContainer::ToolBlock
-            )
-            .is_empty()
+        let bindings = native_input_bindings(
+            &patch,
+            "/input",
+            &fields,
+            JevNativeFieldContainer::ToolBlock,
         );
+        assert_eq!(bindings.len(), 2);
+        let original = patch["patch"].as_str().unwrap();
+        assert_eq!(
+            original.get(bindings[0].start..bindings[0].end),
+            Some("src/a.rs")
+        );
+        assert_eq!(original.get(bindings[1].start..bindings[1].end), Some("+é"));
     }
 
     #[test]

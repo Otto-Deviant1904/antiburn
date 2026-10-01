@@ -27,8 +27,8 @@ pub const MAX_STATE_AND_LONGEST_QUESTION_BYTES: usize = 30 * 1024;
 pub const MAX_REQUEST_TOKENS: u64 = 64 * 1024;
 pub const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 pub const MAX_QUESTIONS_PER_REQUEST: usize = 128;
-pub const MAX_PARALLEL_REQUESTS: usize = 8;
-const REQUEST_START_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+pub const MAX_PARALLEL_REQUESTS: usize = 16;
+const REQUEST_START_INTERVAL: std::time::Duration = std::time::Duration::from_millis(25);
 
 /// One independently selectable normalized session input field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -1163,11 +1163,7 @@ where
             &context.session_identity,
             plan.revisions,
             &requirements,
-            context
-                .reference_snapshots
-                .iter()
-                .map(|reference| (&reference.kind, &reference.fields))
-                .collect::<Vec<_>>(),
+            (!check.supports_incremental_reuse()).then_some(&context.reference_snapshots),
             PINNED_MODEL,
             check.incremental_identity(context),
             crate::analysis::PARSER_REVISION,
@@ -1182,7 +1178,7 @@ where
             progress.input_revision = progress_revision;
             progress
                 .completed_batch_ids
-                .retain(|id| id.starts_with("reuse-"));
+                .retain(|id| id.starts_with("reuse-item:"));
         } else {
             progress = JevRunProgress {
                 input_revision: progress_revision,
@@ -1190,6 +1186,9 @@ where
             };
         }
     }
+    progress
+        .completed_batch_ids
+        .retain(|id| !id.starts_with("reuse-scope:") || id == &reuse_scope);
     progress.completed_batch_ids.insert(reuse_scope.clone());
     progress.failed_item_ids.clear();
     let mut failure = None;
@@ -1256,7 +1255,10 @@ where
             .failed_item_ids
             .extend(initial.skipped_item_ids.iter().cloned());
     }
-    let initial_batches = if failure.is_none() {
+    let initial_batches = if failure
+        .as_ref()
+        .is_none_or(can_continue_after_batch_failure)
+    {
         initial.batches
     } else {
         Vec::new()
@@ -1282,12 +1284,18 @@ where
         save_progress(&progress)
     })
     .await?;
-    if failure.is_some() {
+    if failure
+        .as_ref()
+        .is_some_and(|error| !can_continue_after_batch_failure(error))
+    {
         complete = false;
     }
 
     let mut reconciliation_items = Vec::new();
-    if failure.is_none() {
+    if failure
+        .as_ref()
+        .is_none_or(can_continue_after_batch_failure)
+    {
         for work_item in &plan.work_items {
             let Some(initial_result) = progress.results.get(&work_item.id) else {
                 complete = false;
@@ -1328,7 +1336,14 @@ where
     if !valid_work_item_ids(all_work_items.iter().copied()) {
         return Err(JevError::InvalidCheckPlan);
     }
-    let reconciliation_batches = reconciliation.batches.into_iter().collect();
+    let reconciliation_batches = if failure
+        .as_ref()
+        .is_none_or(can_continue_after_batch_failure)
+    {
+        reconciliation.batches.into_iter().collect()
+    } else {
+        Vec::new()
+    };
     execute_batches(&execute, reconciliation_batches, |batch, response| {
         match response {
             Ok(response) => {
@@ -1396,11 +1411,12 @@ where
     }
     let results = progress.results.values().cloned().collect::<Vec<_>>();
     let result = check.reduce(plan, &results, complete)?;
+    let terminal_failure = failure.filter(|error| !can_continue_after_batch_failure(error));
     Ok(JevExecutionOutcome {
         result,
         progress,
         complete,
-        failure,
+        failure: terminal_failure,
     })
 }
 
@@ -1420,7 +1436,14 @@ fn retain_matching_results(
         serde_json::to_writer(&mut writer, item).map_err(|_| JevError::InvalidCheckPlan)?;
         let prefix = format!("reuse-item:{}:", item.id);
         let digest = format!("{prefix}{:x}", writer.hash.finalize());
-        if !progress.completed_batch_ids.contains(&digest) {
+        if !progress.completed_batch_ids.contains(&digest)
+            || progress.results.get(&item.id).is_some_and(|result| {
+                result.work_item_id != item.id
+                    || result.model != PINNED_MODEL
+                    || result.evidence != item.window.evidence
+                    || !answers_match_item(item, &result.answers)
+            })
+        {
             progress.results.remove(&item.id);
         }
         if let Some(result) = progress.results.get(&item.id) {
@@ -1436,6 +1459,33 @@ fn retain_matching_results(
     Ok(())
 }
 
+fn answers_match_item(item: &JevWorkItem, answers: &BTreeMap<String, JevAnswer>) -> bool {
+    let Some(batch) = build_batch(&[item], MAX_REQUEST_BYTES) else {
+        return false;
+    };
+    let response_answers = batch
+        .answer_owners
+        .iter()
+        .filter_map(|(remote_id, (_, local_id))| {
+            answers
+                .get(local_id)
+                .map(|answer| (remote_id.clone(), answer.clone()))
+        })
+        .collect();
+    validate_jev_response(
+        &JevResponse {
+            model: PINNED_MODEL.to_owned(),
+            answers: response_answers,
+            usage: JevUsage {
+                input_tokens: 0,
+                output_tokens: 0,
+            },
+        },
+        &batch.request,
+    )
+    .is_ok()
+}
+
 fn valid_work_item_ids<'a>(items: impl IntoIterator<Item = &'a JevWorkItem>) -> bool {
     let mut ids = BTreeSet::new();
     items
@@ -1449,10 +1499,27 @@ fn record_failure(
     id: String,
     error: JevError,
 ) {
-    if batch_id.as_ref().is_none_or(|previous| &id < previous) {
+    let replace = failure.as_ref().is_none_or(|previous_error| {
+        (can_continue_after_batch_failure(previous_error)
+            && !can_continue_after_batch_failure(&error))
+            || (can_continue_after_batch_failure(previous_error)
+                == can_continue_after_batch_failure(&error)
+                && batch_id.as_ref().is_none_or(|previous| &id < previous))
+    });
+    if replace {
         *batch_id = Some(id);
         *failure = Some(error);
     }
+}
+
+fn can_continue_after_batch_failure(error: &JevError) -> bool {
+    matches!(
+        error,
+        JevError::RequestOutcomeUnknown
+            | JevError::RateLimited { .. }
+            | JevError::ProviderOverloaded { .. }
+            | JevError::ProviderUnavailable
+    )
 }
 
 fn valid_result_evidence<'a>(
@@ -1542,7 +1609,7 @@ where
         .take(MAX_PARALLEL_REQUESTS)
         .collect();
     let mut next_start: Option<Pin<Box<tokio::time::Sleep>>> = None;
-    let mut failed = false;
+    let mut stop_pending = false;
 
     std::future::poll_fn(|context| {
         for task in &mut tasks {
@@ -1557,7 +1624,9 @@ where
                     validate_jev_response(&response, &batch.request)?;
                     Ok(response)
                 });
-                failed |= result.is_err();
+                stop_pending |= result
+                    .as_ref()
+                    .is_err_and(|error| !can_continue_after_batch_failure(error));
                 if let Err(error) = settle(batch, result) {
                     return std::task::Poll::Ready(Err(error));
                 }
@@ -1568,7 +1637,7 @@ where
         let start_ready = next_start
             .as_mut()
             .is_none_or(|sleep| sleep.as_mut().poll(context).is_ready());
-        if !failed
+        if !stop_pending
             && !pending.is_empty()
             && start_ready
             && let Some(slot) = tasks.iter().position(Option::is_none)
@@ -1581,7 +1650,7 @@ where
             context.waker().wake_by_ref();
         }
 
-        if tasks.iter().all(Option::is_none) && (failed || pending.is_empty()) {
+        if tasks.iter().all(Option::is_none) && (stop_pending || pending.is_empty()) {
             std::task::Poll::Ready(Ok(()))
         } else {
             std::task::Poll::Pending
@@ -1725,6 +1794,166 @@ mod tests {
         }
     }
 
+    struct DurableCheck;
+
+    impl JevCheck for DurableCheck {
+        type Prepared = Value;
+        type Result = usize;
+
+        fn id(&self) -> &'static str {
+            "durable_test"
+        }
+
+        fn revisions(&self) -> JevCheckRevisions {
+            check_revisions(1, 1, 1, 1)
+        }
+
+        fn supports_incremental_reuse(&self) -> bool {
+            true
+        }
+
+        fn prepare(&self, context: &JevSessionContext) -> Result<JevCheckPlan<Value>, JevError> {
+            let work_items = context.check_context["items"]
+                .as_array()
+                .ok_or(JevError::InvalidCheckContext)?
+                .iter()
+                .map(|value| {
+                    let id = value.as_str().ok_or(JevError::InvalidCheckContext)?;
+                    Ok(item(id, id))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(JevCheckPlan {
+                check_id: self.id().to_owned(),
+                input_revision: context.input_revision.clone(),
+                revisions: self.revisions(),
+                work_items,
+                skipped_item_ids: Vec::new(),
+                coverage: JevCoverage::default(),
+                prepared: Value::Null,
+            })
+        }
+
+        fn reduce(
+            &self,
+            _plan: &JevCheckPlan<Value>,
+            results: &[JevWorkItemResult],
+            _complete: bool,
+        ) -> Result<usize, JevError> {
+            Ok(results.len())
+        }
+    }
+
+    fn durable_context(revision: &str, items: &[&str], reference: &str) -> JevSessionContext {
+        JevSessionContext {
+            input_revision: revision.to_owned(),
+            session_identity: "same-session".to_owned(),
+            check_context: json!({"items": items}),
+            limitations: Vec::new(),
+            evidence_store: JevEvidenceStore::default(),
+            reference_snapshots: vec![JevReferenceSnapshot {
+                kind: "instruction_snapshot".to_owned(),
+                identity: reference.to_owned(),
+                revision: reference.to_owned(),
+                fields: json!({"other_file": reference}),
+            }],
+        }
+    }
+
+    #[tokio::test]
+    async fn durable_answers_survive_append_restart_and_regroup_without_provider_calls() {
+        let check = DurableCheck;
+        let first = run_jev_check(
+            &check,
+            &durable_context("first", &["a", "b"], "original"),
+            JevRunProgress::default(),
+            |batch| async move { Ok(response_for(&batch.request)) },
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(first.result, 2);
+        let saved = serde_json::to_string(&first.progress).unwrap();
+        let restarted: JevRunProgress = serde_json::from_str(&saved).unwrap();
+        let restarted = run_jev_check(
+            &check,
+            &durable_context("first", &["a", "b"], "original"),
+            restarted,
+            |_| async { panic!("restart must not dispatch") },
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(restarted.result, 2);
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let appended = run_jev_check(
+            &check,
+            &durable_context("appended", &["b", "a", "c"], "unrelated-change"),
+            restarted.progress,
+            |batch| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                async move { Ok(response_for(&batch.request)) }
+            },
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(appended.result, 3);
+        let regrouped: JevRunProgress =
+            serde_json::from_str(&serde_json::to_string(&appended.progress).unwrap()).unwrap();
+        let regrouped = run_jev_check(
+            &check,
+            &durable_context("regrouped", &["c", "a", "b"], "another-file"),
+            regrouped,
+            |_| async { panic!("unchanged items must not dispatch") },
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+        assert!(regrouped.complete);
+        assert_eq!(regrouped.result, 3);
+    }
+
+    #[tokio::test]
+    async fn durable_answer_rejects_stale_binding_and_invalid_answer() {
+        let check = DurableCheck;
+        let context = durable_context("first", &["a"], "original");
+        let first = run_jev_check(
+            &check,
+            &context,
+            JevRunProgress::default(),
+            |batch| async move { Ok(response_for(&batch.request)) },
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+        for (index, mut progress) in [first.progress.clone(), first.progress]
+            .into_iter()
+            .enumerate()
+        {
+            if index == 0 {
+                progress.results.get_mut("a").unwrap().evidence[0].source_id = "stale".to_owned();
+            } else {
+                progress.results.get_mut("a").unwrap().answers.clear();
+            }
+            let calls = std::sync::atomic::AtomicUsize::new(0);
+            let outcome = run_jev_check(
+                &check,
+                &durable_context("next", &["a"], "other"),
+                progress,
+                |batch| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    async move { Ok(response_for(&batch.request)) }
+                },
+                |_| Ok(()),
+            )
+            .await
+            .unwrap();
+            assert!(outcome.complete);
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+        }
+    }
+
     #[test]
     fn partial_failure_category_does_not_depend_on_completion_order() {
         for reverse in [false, true] {
@@ -1740,8 +1969,8 @@ mod tests {
             for (id, error) in failures {
                 record_failure(&mut failure, &mut batch, id.to_owned(), error);
             }
-            assert_eq!(failure, Some(JevError::RequestOutcomeUnknown));
-            assert_eq!(batch.as_deref(), Some("batch-a"));
+            assert_eq!(failure, Some(JevError::Cancelled));
+            assert_eq!(batch.as_deref(), Some("batch-z"));
         }
     }
 
@@ -2545,7 +2774,7 @@ mod tests {
         .await
         .unwrap();
         assert!(!first.complete);
-        assert_eq!(first.failure, Some(JevError::ProviderUnavailable));
+        assert_eq!(first.failure, None);
         assert_eq!(first.progress.results.len(), 1);
         assert_eq!(
             first
@@ -2685,15 +2914,25 @@ mod tests {
         let mut stale = original.progress;
         stale.results.get_mut("first").unwrap().evidence[0].source_id = "other-source".to_owned();
 
+        let calls = std::sync::atomic::AtomicUsize::new(0);
         let resumed = run_jev_check(
             &check,
             &context,
             stale,
-            |batch| async move { Ok(response_for(&batch.request)) },
+            |batch| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                async move { Ok(response_for(&batch.request)) }
+            },
             |_| Ok(()),
         )
-        .await;
-        assert_eq!(resumed, Err(JevError::InvalidCheckPlan));
+        .await
+        .unwrap();
+        assert!(resumed.complete);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            resumed.progress.results["first"].evidence[0].source_id,
+            "event-first"
+        );
     }
 
     #[tokio::test]

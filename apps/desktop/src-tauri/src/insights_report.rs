@@ -78,6 +78,7 @@ const CURRENT_FINDING_LIMIT: usize = 512;
 const MAX_RESOURCE_REPOSITORIES: usize = 256;
 const MAX_RESOURCE_INVENTORY_CONTEXTS: usize = 256;
 
+pub(crate) use ignored_instructions::has_published_sampled_instruction_assessment;
 pub(crate) use ignored_instructions::ignored_instruction_session_statuses;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -600,6 +601,8 @@ pub(crate) mod tests {
                 skipped_rules: Vec::new(),
                 skipped_actions: Vec::new(),
                 processing_limit_reached: false,
+                sampled_pass: false,
+                selector_revision: 0,
                 limitations: Vec::new(),
                 reassessed_comparison_ids: Vec::new(),
                 reassessed_rule_ids: Vec::new(),

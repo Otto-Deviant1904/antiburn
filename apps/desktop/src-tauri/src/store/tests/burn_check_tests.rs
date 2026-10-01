@@ -2,6 +2,179 @@ use serde_json::json;
 
 use super::*;
 
+#[test]
+fn sampled_cohort_survives_restart_and_rejects_stale_publications() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let record = session("sampled-cohort", 10_000);
+    store
+        .upsert_sessions(
+            std::slice::from_ref(&record),
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    store
+        .lock()
+        .execute(
+            "INSERT INTO burn_check_assessment
+           (environment_key, agent, session_id, check_id, incarnation, source_generation,
+            published_fence, input_revision, result_revision, result_json, status,
+            created_at_epoch, updated_at_epoch)
+         VALUES (?1, ?2, ?3, 'ignored_instructions', 1, 2, 3, 'revision', 'revision', '{}',
+                 'completed', 10, 10)",
+            params![
+                record.key.environment_key,
+                record.key.agent,
+                record.key.session_id
+            ],
+        )
+        .unwrap();
+    let input = BurnCheckInput {
+        key: record.key,
+        check_id: "ignored_instructions".into(),
+        incarnation: 1,
+        source_generation: 2,
+        source_fingerprint: None,
+        activity_cursor: String::new(),
+        published_fence: 3,
+        input_revision: "revision".into(),
+        evaluator_revision: "current".into(),
+        boundary_at_epoch: 0,
+    };
+    let pair = BurnCheckSampledPair {
+        comparison_id: "pair".into(),
+        dependency_digest: "dependencies".into(),
+        incarnation: 1,
+        action_id: "action".into(),
+        action_digest: "action-digest".into(),
+        instruction_digest: "instruction-digest".into(),
+        selector_revision: 2,
+        round: 0,
+        assessed: true,
+    };
+    assert!(
+        store
+            .save_burn_check_sampled_pairs(&input, std::slice::from_ref(&pair))
+            .unwrap()
+    );
+    let mut stale = input.clone();
+    stale.input_revision = "stale".into();
+    assert!(
+        !store
+            .save_burn_check_sampled_pairs(&stale, std::slice::from_ref(&pair))
+            .unwrap()
+    );
+    drop(store);
+    let reopened = Store::open(dir.path()).unwrap();
+    assert_eq!(
+        reopened
+            .burn_check_sampled_pairs(&input.key, &input.check_id)
+            .unwrap(),
+        vec![pair]
+    );
+}
+
+#[test]
+fn sample_origin_keeps_the_initial_boundary_after_append() {
+    let store = store();
+    let record = session("sample-origin", 10_000);
+    store
+        .upsert_sessions(
+            std::slice::from_ref(&record),
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    let candidate = BurnCheckCandidate {
+        session: record,
+        incarnation: 1,
+        source_generation: 1,
+        source_fingerprint: None,
+        activity_cursor: "first".into(),
+        published_fence: 1,
+        boundary_at_epoch: 100,
+        boundary_positions: std::collections::BTreeMap::from([("source".into(), 3)]),
+        historical: false,
+    };
+    let initial = store
+        .observe_burn_check_sample_origin(&candidate, "ignored_instructions")
+        .unwrap();
+    let mut appended = candidate.clone();
+    appended.boundary_positions.insert("source".into(), 100);
+    appended.boundary_at_epoch = 200;
+    assert_eq!(
+        store
+            .observe_burn_check_sample_origin(&appended, "ignored_instructions")
+            .unwrap(),
+        initial
+    );
+    appended.incarnation = 2;
+    assert_eq!(
+        store
+            .observe_burn_check_sample_origin(&appended, "ignored_instructions")
+            .unwrap()
+            .boundary_positions["source"],
+        100
+    );
+}
+
+#[test]
+fn instruction_epoch_fences_old_actions_after_edit_and_survives_resume() {
+    let store = store();
+    let record = session("instruction-epoch", 10_000);
+    store
+        .upsert_sessions(
+            std::slice::from_ref(&record),
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    let insert_turn = |source: &str, index: i64| {
+        store
+            .lock()
+            .execute(
+                "INSERT INTO turn (environment_key, agent, session_id, claim_fence, source_key,
+                thread_id, turn_index, scope, role, input_tokens, cache_read_tokens,
+                cache_write_tokens, output_tokens, is_compaction_boundary)
+             VALUES (?1, ?2, ?3, 1, ?4, 'thread', ?5, 'main', 'assistant', 0, 0, 0, 0, 0)",
+                params![
+                    record.key.environment_key,
+                    record.key.agent,
+                    record.key.session_id,
+                    source,
+                    index
+                ],
+            )
+            .unwrap();
+    };
+    insert_turn("source", 1);
+    let (first, first_at) = store
+        .observe_burn_check_instruction_epoch(&record.key, 1, 1, "rule-a", 20_000)
+        .unwrap();
+    assert_eq!(first.get("source"), Some(&1));
+    insert_turn("source", 2);
+    let (resumed, at) = store
+        .observe_burn_check_instruction_epoch(&record.key, 1, 1, "rule-a", 30_000)
+        .unwrap();
+    assert_eq!(resumed, first);
+    assert_eq!(at, first_at);
+    let (edited, at) = store
+        .observe_burn_check_instruction_epoch(&record.key, 1, 1, "rule-b", 40_000)
+        .unwrap();
+    assert_eq!(edited.get("source"), Some(&2));
+    assert_eq!(at, 40_000);
+    insert_turn("source", 3);
+    let (after_append, at) = store
+        .observe_burn_check_instruction_epoch(&record.key, 1, 1, "rule-b", 50_000)
+        .unwrap();
+    assert_eq!(after_append, edited);
+    assert_eq!(at, 40_000);
+    insert_turn("new-source", 0);
+    let (new_source, _) = store
+        .observe_burn_check_instruction_epoch(&record.key, 1, 1, "rule-b", 60_000)
+        .unwrap();
+    assert_eq!(new_source.get("source"), Some(&2));
+    assert_eq!(new_source.get("new-source"), Some(&0));
+}
+
 #[tokio::test]
 async fn shared_runner_persists_each_response_before_the_slow_tail_and_resumes_without_dispatch() {
     use antiburn_local::analysis::jev::*;
@@ -172,6 +345,371 @@ async fn shared_runner_persists_each_response_before_the_slow_tail_and_resumes_w
 const CHECK_IDS: &[&str] = &["ignored_instructions", "future_check"];
 
 #[test]
+fn replacing_a_rejected_key_retries_only_auth_failures() {
+    let store = store();
+    let mut record = session("replace-key", 10_000);
+    record.activity_cursor = "before".to_owned();
+    store
+        .upsert_sessions(&[record.clone()], &crate::agents::evidence_cohort())
+        .unwrap();
+    publish_ready(&store, &record, 1);
+    store
+        .capture_burn_check_boundaries(&["ignored_instructions"], 20_000)
+        .unwrap();
+    record.activity_cursor = "after".to_owned();
+    record.updated_at_epoch = Some(29_000);
+    store
+        .upsert_sessions(&[record.clone()], &crate::agents::evidence_cohort())
+        .unwrap();
+    publish_ready(&store, &record, 2);
+    let candidate = store
+        .burn_check_candidates("ignored_instructions", 40_000, 180, 10)
+        .unwrap()
+        .pop()
+        .unwrap();
+    let input = input(&candidate, "replace-key-input");
+    assert!(
+        store
+            .queue_burn_check_assessment(&input, 40_000, 180)
+            .unwrap()
+    );
+    assert!(
+        store
+            .claim_burn_check_assessment(&input, 40_000, 300, 180)
+            .unwrap()
+    );
+    assert!(
+        store
+            .release_failed_burn_check_lease(&input, "authentication_rejected", 100_000)
+            .unwrap()
+    );
+    assert!(
+        store
+            .burn_check_candidates("ignored_instructions", 40_001, 180, 10)
+            .unwrap()
+            .is_empty()
+    );
+    store.retry_rejected_burn_checks().unwrap();
+    assert_eq!(
+        store
+            .burn_check_candidates("ignored_instructions", 40_001, 180, 10)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn work_answers_survive_completion_and_grouping_changes() {
+    use antiburn_local::analysis::jev::{
+        JevAnswer, JevRunProgress, JevUsage, JevWorkItemResult, PINNED_MODEL,
+    };
+    let store = store();
+    let input = BurnCheckInput {
+        key: SessionKey::new("native", "claude", "work-reuse"),
+        check_id: "ignored_instructions".to_owned(),
+        incarnation: 1,
+        source_generation: 1,
+        source_fingerprint: None,
+        activity_cursor: String::new(),
+        published_fence: 1,
+        input_revision: "first".to_owned(),
+        evaluator_revision: "current".to_owned(),
+        boundary_at_epoch: 0,
+    };
+    let mut progress = JevRunProgress::default();
+    progress.completed_batch_ids.extend([
+        "reuse-scope:same".to_owned(),
+        "reuse-item:item:exact".to_owned(),
+    ]);
+    progress.results.insert(
+        "item".to_owned(),
+        JevWorkItemResult {
+            request_id: "old-batch".to_owned(),
+            work_item_id: "item".to_owned(),
+            answers: std::collections::BTreeMap::from([(
+                "question".to_owned(),
+                JevAnswer::Noul { noul: 0.8 },
+            )]),
+            evidence: Vec::new(),
+            model: PINNED_MODEL.to_owned(),
+            usage: JevUsage {
+                input_tokens: 0,
+                output_tokens: 0,
+            },
+        },
+    );
+    store
+        .save_burn_check_work_answers(&input, &progress, 20)
+        .unwrap();
+    let mut next = input.clone();
+    next.input_revision = "appended".to_owned();
+    next.source_generation = 2;
+    let saved = store.burn_check_work_answers(&next).unwrap();
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].0, "reuse-scope:same");
+    assert_eq!(saved[0].1, "reuse-item:item:exact");
+    assert_eq!(saved[0].2, progress.results["item"]);
+}
+
+#[tokio::test]
+async fn appended_work_answers_resume_without_provider_dispatch() {
+    use antiburn_local::analysis::jev::*;
+    use std::collections::BTreeMap;
+
+    struct Check;
+    impl JevCheck for Check {
+        type Prepared = ();
+        type Result = usize;
+        fn id(&self) -> &'static str {
+            "ignored_instructions"
+        }
+        fn revisions(&self) -> JevCheckRevisions {
+            JevCheckRevisions {
+                projection: 1,
+                chunking: 1,
+                questions: 1,
+                reducer: 1,
+            }
+        }
+        fn supports_incremental_reuse(&self) -> bool {
+            true
+        }
+        fn incremental_identity(&self, _: &JevSessionContext) -> serde_json::Value {
+            json!({"session": "same", "boundary": 1})
+        }
+        fn prepare(&self, context: &JevSessionContext) -> Result<JevCheckPlan<()>, JevError> {
+            Ok(JevCheckPlan {
+                check_id: self.id().to_owned(),
+                input_revision: context.input_revision.clone(),
+                revisions: self.revisions(),
+                work_items: vec![JevWorkItem {
+                    id: "unchanged".to_owned(),
+                    window: JevInputWindow {
+                        fields: json!({"action": "unchanged"}),
+                        evidence: Vec::new(),
+                    },
+                    questions: BTreeMap::from([(
+                        "question".to_owned(),
+                        JevQuestion::Noul {
+                            instructions: json!("Assess the action"),
+                            criteria: None,
+                        },
+                    )]),
+                }],
+                skipped_item_ids: Vec::new(),
+                coverage: JevCoverage::default(),
+                prepared: (),
+            })
+        }
+        fn reduce(
+            &self,
+            _: &JevCheckPlan<()>,
+            results: &[JevWorkItemResult],
+            _: bool,
+        ) -> Result<usize, JevError> {
+            Ok(results.len())
+        }
+    }
+
+    let data_dir = tempfile::tempdir().unwrap();
+    let store = Store::open(data_dir.path()).unwrap();
+    let input = BurnCheckInput {
+        key: SessionKey::new("native", "claude", "append-reuse"),
+        check_id: Check.id().to_owned(),
+        incarnation: 1,
+        source_generation: 1,
+        source_fingerprint: None,
+        activity_cursor: String::new(),
+        published_fence: 1,
+        input_revision: "before-append".to_owned(),
+        evaluator_revision: "current".to_owned(),
+        boundary_at_epoch: 0,
+    };
+    let context = |revision: &str| JevSessionContext {
+        input_revision: revision.to_owned(),
+        session_identity: "same-session".to_owned(),
+        check_context: serde_json::Value::Null,
+        limitations: Vec::new(),
+        evidence_store: JevEvidenceStore::default(),
+        reference_snapshots: Vec::new(),
+    };
+    let first = run_jev_check(
+        &Check,
+        &context("before-append"),
+        JevRunProgress::default(),
+        |batch| async move {
+            Ok(JevResponse {
+                model: PINNED_MODEL.to_owned(),
+                answers: batch
+                    .request
+                    .questions
+                    .keys()
+                    .map(|id| (id.clone(), JevAnswer::Noul { noul: 0.9 }))
+                    .collect(),
+                usage: JevUsage {
+                    input_tokens: 10,
+                    output_tokens: 1,
+                },
+            })
+        },
+        |_| Ok(()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(first.result, 1);
+    store
+        .save_burn_check_work_answers(&input, &first.progress, 100)
+        .unwrap();
+    drop(store);
+    let store = Store::open(data_dir.path()).unwrap();
+
+    let mut appended = input.clone();
+    appended.source_generation += 1;
+    appended.input_revision = "after-append".to_owned();
+    let mut restored = JevRunProgress::default();
+    for (scope, marker, answer) in store.burn_check_work_answers(&appended).unwrap() {
+        restored.completed_batch_ids.extend([scope, marker]);
+        restored.results.insert(answer.work_item_id.clone(), answer);
+    }
+    let resumed = run_jev_check(
+        &Check,
+        &context("after-append"),
+        restored,
+        |_| async { panic!("unchanged work must not dispatch after append or restart") },
+        |_| Ok(()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(resumed.result, 1);
+    assert_eq!(resumed.progress.request_count, 0);
+}
+
+#[test]
+fn pause_and_reenable_preserve_same_revision_checkpoint() {
+    let store = store();
+    let mut record = session("paused-check", 10_000);
+    record.activity_cursor = "before".to_owned();
+    store
+        .upsert_sessions(&[record.clone()], &crate::agents::evidence_cohort())
+        .unwrap();
+    publish_ready(&store, &record, 1);
+    store
+        .capture_burn_check_boundaries(&["ignored_instructions"], 20_000)
+        .unwrap();
+    record.activity_cursor = "after".to_owned();
+    record.updated_at_epoch = Some(29_000);
+    store
+        .upsert_sessions(&[record.clone()], &crate::agents::evidence_cohort())
+        .unwrap();
+    publish_ready(&store, &record, 2);
+    let candidate = store
+        .burn_check_candidates("ignored_instructions", 40_000, 180, 10)
+        .unwrap()
+        .pop()
+        .unwrap();
+    let input = input(&candidate, "paused-input");
+    assert!(
+        store
+            .queue_burn_check_assessment(&input, 40_000, 180)
+            .unwrap()
+    );
+    assert!(
+        store
+            .claim_burn_check_assessment(&input, 40_000, 300, 180)
+            .unwrap()
+    );
+    assert!(
+        store
+            .save_burn_check_progress(&input, "{\"saved\":true}", 40_001, 300, 180)
+            .unwrap()
+    );
+    store.disable_burn_checks().unwrap();
+    store
+        .capture_burn_check_boundaries(&["ignored_instructions"], 40_002)
+        .unwrap();
+    let resumed = store
+        .burn_check_candidates("ignored_instructions", 40_003, 180, 10)
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(resumed.boundary_at_epoch, candidate.boundary_at_epoch);
+    assert!(
+        store
+            .queue_burn_check_assessment(&input, 40_003, 180)
+            .unwrap()
+    );
+    assert_eq!(
+        store
+            .burn_check_assessment(&input.key, &input.check_id)
+            .unwrap()
+            .unwrap()
+            .progress_json,
+        "{\"saved\":true}"
+    );
+}
+
+#[test]
+fn completed_source_rewrite_is_selected_without_a_new_activity_cursor() {
+    let store = store();
+    let mut record = session("rewrite-source", 10_000);
+    record.activity_cursor = "before".to_owned();
+    store
+        .upsert_sessions(&[record.clone()], &crate::agents::evidence_cohort())
+        .unwrap();
+    publish_ready(&store, &record, 1);
+    store
+        .capture_burn_check_boundaries(&["ignored_instructions"], 20_000)
+        .unwrap();
+    record.activity_cursor = "after".to_owned();
+    record.updated_at_epoch = Some(29_000);
+    store
+        .upsert_sessions(&[record.clone()], &crate::agents::evidence_cohort())
+        .unwrap();
+    publish_ready(&store, &record, 2);
+    let candidate = store
+        .burn_check_candidates("ignored_instructions", 40_000, 180, 10)
+        .unwrap()
+        .pop()
+        .unwrap();
+    let input = input(&candidate, "rewrite-revision");
+    assert!(
+        store
+            .queue_burn_check_assessment(&input, 40_000, 180)
+            .unwrap()
+    );
+    assert!(
+        store
+            .claim_burn_check_assessment(&input, 40_000, 300, 180)
+            .unwrap()
+    );
+    assert!(
+        store
+            .complete_burn_check_assessment(&input, "{}", 40_001, 180)
+            .unwrap()
+    );
+    assert!(
+        store
+            .burn_check_candidates("ignored_instructions", 40_002, 180, 10)
+            .unwrap()
+            .is_empty()
+    );
+    record.source_fingerprint = Some("rewritten".to_owned());
+    record.updated_at_epoch = Some(41_000);
+    store
+        .upsert_sessions(&[record.clone()], &crate::agents::evidence_cohort())
+        .unwrap();
+    publish_ready(&store, &record, 3);
+    assert_eq!(
+        store
+            .burn_check_candidates("ignored_instructions", 42_000, 180, 10)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn scheduler_revision_belongs_to_each_registered_check() {
     let store = store();
     let mut record = session("shared-check-revision", 10_000);
@@ -333,7 +871,13 @@ fn full_page_progress_and_multi_page_result_keep_separate_bounds() {
             .claim_burn_check_assessment(&input, 40_000, 300, 180)
             .unwrap()
     );
-    let progress = json!({"answers": "x".repeat(500_000)}).to_string();
+    let oversized_progress = json!({"answers": "x".repeat(2 * 1024 * 1024)}).to_string();
+    assert!(
+        store
+            .save_burn_check_progress(&input, &oversized_progress, 40_001, 300, 180)
+            .is_err()
+    );
+    let progress = json!({"answers": "x".repeat(1_200_000)}).to_string();
     assert!(
         store
             .save_burn_check_progress(&input, &progress, 40_001, 300, 180)
@@ -407,6 +951,113 @@ fn enablement_captures_source_positions_for_timestamp_less_activity() {
         .pop()
         .unwrap();
     assert_eq!(candidate.boundary_positions.get("source"), Some(&7));
+}
+
+#[test]
+fn completed_pass_moves_the_turn_boundary_to_new_activity() {
+    let store = store();
+    let mut record = session("append-boundary", 10_000);
+    record.activity_cursor = "before".into();
+    store
+        .upsert_sessions(&[record.clone()], &crate::agents::evidence_cohort())
+        .unwrap();
+    store
+        .capture_burn_check_boundaries(&["ignored_instructions"], 20_000)
+        .unwrap();
+    record.activity_cursor = "first".into();
+    record.updated_at_epoch = Some(29_000);
+    store
+        .upsert_sessions(&[record.clone()], &crate::agents::evidence_cohort())
+        .unwrap();
+    publish_ready(&store, &record, 1);
+    let first = store
+        .burn_check_candidates("ignored_instructions", 40_000, 180, 10)
+        .unwrap()
+        .pop()
+        .unwrap();
+    let input = input(&first, "first-pass");
+    assert!(
+        store
+            .queue_burn_check_assessment(&input, 40_000, 180)
+            .unwrap()
+    );
+    assert!(
+        store
+            .claim_burn_check_assessment(&input, 40_000, 300, 180)
+            .unwrap()
+    );
+    store
+        .lock()
+        .execute(
+            "INSERT INTO turn (environment_key, agent, session_id, claim_fence, source_key,
+             thread_id, turn_index, scope, role, input_tokens, cache_read_tokens,
+             cache_write_tokens, output_tokens, is_compaction_boundary)
+             VALUES (?1, ?2, ?3, 1, 'source', 'thread', 7, 'main', 'assistant', 0, 0, 0, 0, 0)",
+            params![
+                record.key.environment_key,
+                record.key.agent,
+                record.key.session_id
+            ],
+        )
+        .unwrap();
+    assert!(
+        store
+            .complete_burn_check_assessment(&input, "{}", 40_001, 180)
+            .unwrap()
+    );
+    assert!(
+        store
+            .burn_check_candidates("ignored_instructions", 40_002, 180, 10)
+            .unwrap()
+            .is_empty()
+    );
+
+    record.activity_cursor = "second".into();
+    record.updated_at_epoch = Some(50_000);
+    store
+        .upsert_sessions(&[record.clone()], &crate::agents::evidence_cohort())
+        .unwrap();
+    publish_ready(&store, &record, 2);
+    let next = store
+        .burn_check_candidates("ignored_instructions", 60_000, 180, 10)
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(next.boundary_positions.get("source"), Some(&7));
+    assert_eq!(next.activity_cursor, "second");
+}
+
+#[test]
+fn recent_appended_activity_precedes_an_older_backlog() {
+    let store = store();
+    let mut records = [session("backlog", 10_000), session("new-action", 10_000)];
+    for record in &mut records {
+        record.activity_cursor = "before".into();
+        store
+            .upsert_sessions(
+                std::slice::from_ref(record),
+                &crate::agents::evidence_cohort(),
+            )
+            .unwrap();
+    }
+    store
+        .capture_burn_check_boundaries(&["ignored_instructions"], 20_000)
+        .unwrap();
+    for (record, updated_at) in records.iter_mut().zip([29_000, 39_000]) {
+        record.activity_cursor = "after".into();
+        record.updated_at_epoch = Some(updated_at);
+        store
+            .upsert_sessions(
+                std::slice::from_ref(record),
+                &crate::agents::evidence_cohort(),
+            )
+            .unwrap();
+        publish_ready(&store, record, 1);
+    }
+    let candidates = store
+        .burn_check_candidates("ignored_instructions", 40_000, 180, 1)
+        .unwrap();
+    assert_eq!(candidates[0].session.key.session_id, "new-action");
 }
 
 #[test]

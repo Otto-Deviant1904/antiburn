@@ -19,7 +19,8 @@ antiburn keeps its session index locally and needs no project-operated account.
 When the user enables Jev-powered Burn Checks with a TypeSafe API key, the
 current Ignored Instructions check sends selected instruction text, assistant
 text excerpts, Bash command input, file-edit paths, read-file paths, search
-queries with scope filters, and other-tool inputs to TypeSafe. Bash input can
+queries with scope filters, and other-tool inputs to TypeSafe. OpenCode
+`apply_patch` requests expose paths from valid `patchText` input. Bash input can
 include inline scripts, heredocs, and patches recorded inside the command.
 Dedicated edit-tool content is excluded. The check excludes user messages,
 read output, search output, command output, and all other tool-result text.
@@ -35,7 +36,16 @@ Instruction-file discovery compares supported files in their current state.
 It does not prove historical contents or activation. Recover historical
 instruction text only from an authoritative session record; do not infer it
 from a matching current path or a read request. Keep unavailable evidence
-unavailable, and do not treat it as a clean result.
+unavailable. Ignored Instructions samples up to 256 high-priority rule/action
+pairs per review. Clean means no finding among sampled comparisons, not that
+all content is safe. Keep provider and evidence errors separate from the
+remaining sampling gap. Preserve source-bound rule and action identity across
+append and restart: review new activity first, then older pairs not yet
+sampled. Instruction changes govern future actions only; the first observed
+version cannot establish historical activation. The roughly 60-second
+ordinary-session goal after worker start is not a cutoff or guarantee. Describe
+incremental paid requests, compatible answer reuse, and unresolved-dispatch
+protection without promising a per-session cost cap.
 
 Follow [the reusable Jev check contract](docs/smart-burn-checks.md#reusable-jev-check-contract) when adding a
 check-owned projection, input window, question set, or reducer. See

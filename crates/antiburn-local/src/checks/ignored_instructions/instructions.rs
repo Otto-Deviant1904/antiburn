@@ -122,13 +122,13 @@ pub fn segment_markdown(
     let lines = source_lines[frontmatter_line_count..].to_vec();
     let line_offset = frontmatter_line_count as u32;
     let mut sections = Vec::new();
-    let mut heading_stack: Vec<(usize, String)> = Vec::new();
+    let mut heading_stack: Vec<(usize, String, String)> = Vec::new();
     let mut body = String::new();
     let mut start_line = line_offset.saturating_add(1);
     let mut in_fence = false;
 
     let emit = |sections: &mut Vec<InstructionRuleSection>,
-                heading_stack: &[(usize, String)],
+                heading_stack: &[(usize, String, String)],
                 body: &str,
                 start_line: u32,
                 end_line: u32|
@@ -138,7 +138,7 @@ pub fn segment_markdown(
         }
         let heading = heading_stack
             .iter()
-            .map(|(_, title)| title.as_str())
+            .map(|(_, title, _)| title.as_str())
             .collect::<Vec<_>>()
             .join(" / ");
         let content_class = if background_heading(&heading) && !contains_binding_language(body) {
@@ -179,11 +179,14 @@ pub fn segment_markdown(
             } else {
                 format!("{prefix}\n{}", lines[first..last].join("\n"))
             };
-            let text = if frontmatter.is_empty() {
-                rule_text
-            } else {
-                format!("{frontmatter}\n{rule_text}")
-            };
+            let text = heading_stack
+                .iter()
+                .map(|(_, _, context)| context.as_str())
+                .filter(|context| !context.trim().is_empty())
+                .chain((!frontmatter.is_empty()).then_some(frontmatter.as_str()))
+                .chain(std::iter::once(rule_text.as_str()))
+                .collect::<Vec<_>>()
+                .join("\n");
             let item_start = start_line.saturating_add(first as u32);
             let item_end = if last == lines.len() {
                 end_line
@@ -249,14 +252,17 @@ pub fn segment_markdown(
                 start_line,
                 line_number.saturating_sub(1),
             )?;
+            if let Some((_, _, context)) = heading_stack.last_mut() {
+                *context = body.clone();
+            }
             body.clear();
             while heading_stack
                 .last()
-                .is_some_and(|(parent_level, _)| *parent_level >= level)
+                .is_some_and(|(parent_level, _, _)| *parent_level >= level)
             {
                 heading_stack.pop();
             }
-            heading_stack.push((level, title.to_owned()));
+            heading_stack.push((level, title.to_owned(), String::new()));
             start_line = line_number + if setext.is_some() { 2 } else { 1 };
             if setext.is_some() {
                 skip_setext_underline = true;
@@ -479,6 +485,17 @@ mod tests {
                 .contains("Exception: run the snapshot command")
         );
         assert_eq!(sections[1].heading, "Rules / Other");
+    }
+
+    #[test]
+    fn descendant_rules_keep_parent_conditions_and_source_lines() {
+        let sections = segment_markdown("AGENTS.md", "# Rules\nOnly when publishing a release.\n\n## Checks\nRun the tests.\n\n### Report\nReport failures.").unwrap();
+        assert_eq!(sections.len(), 3);
+        assert_eq!(sections[1].start_line, 5);
+        assert_eq!(sections[2].start_line, 8);
+        assert!(sections[1].text.contains("Only when publishing a release."));
+        assert!(sections[2].text.contains("Only when publishing a release."));
+        assert!(sections[2].text.contains("Run the tests."));
     }
 
     #[test]

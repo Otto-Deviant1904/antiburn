@@ -195,6 +195,23 @@ fn exact_read_order_accepts_selected_paths_with_and_without_native_normalization
             .unwrap();
         assert_eq!(order.state(), ObligationState::Satisfied);
         assert_eq!(order.earlier_request_id.as_deref(), Some("read-call"));
+        let mut with_unrelated = assessment.clone();
+        let mut malformed_shell = event("malformed-shell", 15, "assistant", "main", "{}");
+        malformed_shell.kind = "tool_input".to_owned();
+        malformed_shell.tool_name = Some("Bash".to_owned());
+        malformed_shell.tool_call_id = Some("shell-call".to_owned());
+        with_unrelated.content.actions.insert(1, malformed_shell);
+        let plan = build_assessment_plan(with_unrelated);
+        let edit = plan
+            .comparisons
+            .iter()
+            .find(|comparison| comparison.action.action_id == "edit-call")
+            .unwrap();
+        let order = plan.read_request_orders[&edit.id]
+            .iter()
+            .find(|order| order.required_path == "docs/policy.md")
+            .unwrap();
+        assert_eq!(order.state(), ObligationState::Satisfied);
         for (read_part, edit_part, expected) in [
             (0, 1, ObligationState::Satisfied),
             (1, 0, ObligationState::Violated),
@@ -516,7 +533,7 @@ async fn append_reuses_unchanged_judgments_and_classification() {
     let appended_context = build_jev_context(&appended).unwrap();
     let (second, sent) = run(&appended_context, first.progress.clone(), "any", "action").await;
     assert!(second.complete);
-    assert_eq!(sent.len(), 2);
+    assert_eq!(sent.len(), 1);
     assert!(
         !sent
             .iter()

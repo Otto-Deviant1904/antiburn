@@ -187,6 +187,7 @@ impl Store {
                                WHERE o.reservation_id = burn_check_usage_reservation.id)",
             [now_epoch],
         )?;
+        prune_settled_reservations(&transaction)?;
         let count: usize = transaction.query_row(
             "SELECT count(*) FROM burn_check_usage_reservation",
             [],
@@ -470,6 +471,15 @@ pub(super) fn save_reservation(
     Ok(())
 }
 
+fn prune_settled_reservations(connection: &rusqlite::Connection) -> anyhow::Result<()> {
+    connection.execute(
+        "DELETE FROM burn_check_usage_reservation
+          WHERE json_extract(data, '$.settled') = 1",
+        [],
+    )?;
+    Ok(())
+}
+
 pub(super) fn record_confirmed_usage(
     summary: &mut UsageLedgerSummary,
     reservation: &UsageReservation,
@@ -538,6 +548,35 @@ fn format_usd_nanos(nanos: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settled_reservations_are_pruned_but_unknown_reservations_remain() {
+        let store = Store::open_in_memory(std::path::Path::new("usage-pruning")).unwrap();
+        let connection = store.lock();
+        for (id, settled, unknown_recorded) in [("settled", true, false), ("unknown", false, true)]
+        {
+            save_reservation(
+                &connection,
+                &UsageReservation {
+                    id: id.to_owned(),
+                    session_key: "session".to_owned(),
+                    provider: "typesafe-systemone".to_owned(),
+                    check_id: "ignored_instructions".to_owned(),
+                    model: "jev-1.13.0".to_owned(),
+                    input_tokens: 65_536,
+                    expires_at_epoch: 86_400,
+                    settled,
+                    unknown_recorded,
+                },
+            )
+            .unwrap();
+        }
+
+        prune_settled_reservations(&connection).unwrap();
+
+        assert!(load_reservation(&connection, "settled", 1).is_err());
+        assert!(load_reservation(&connection, "unknown", 1).is_ok());
+    }
 
     #[test]
     fn indexed_usage_migration_keeps_unknown_bounds_and_summary() {

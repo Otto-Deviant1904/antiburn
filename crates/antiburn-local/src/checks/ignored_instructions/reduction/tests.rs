@@ -87,6 +87,54 @@ fn assessment() -> AssessmentPlan {
 }
 
 #[test]
+fn partial_response_and_rule_ranges_cannot_clear_a_whole_response_finding() {
+    let mut plan = build_assessment_plan(input(
+        vec![event(
+            "reply",
+            10,
+            "assistant",
+            "main",
+            &format!("{} required", "a".repeat(3000)),
+        )],
+        "Include `required` in every response.",
+    ));
+    assert!(plan.comparisons.len() > 1);
+    let comparison = plan.comparisons[0].clone();
+    let mut answer = response(
+        &comparison,
+        "unrelated",
+        "self_contained",
+        "not_completion_obligation",
+    );
+    answer
+        .answers
+        .retain(|question, _| question == QUESTION_APPLICABILITY);
+    set_probability(&mut answer, QUESTION_APPLICABILITY, "not_applicable", 0.97);
+    plan.comparisons = vec![comparison.clone()];
+    let result = reduce_assessment(
+        &plan,
+        &BTreeMap::from([(comparison.id.clone(), answer.clone())]),
+        true,
+    );
+    assert_eq!(
+        result.unassessed_comparisons,
+        std::slice::from_ref(&comparison.id)
+    );
+    assert!(result.coverage.reassessed_finding_ids.is_empty());
+
+    let mut partial_rule = comparison;
+    partial_rule.action.truncated = false;
+    partial_rule.rule_text_end = partial_rule.rule_text.len() - 1;
+    plan.comparisons = vec![partial_rule.clone()];
+    let result = reduce_assessment(
+        &plan,
+        &BTreeMap::from([(partial_rule.id.clone(), answer)]),
+        true,
+    );
+    assert!(result.coverage.reassessed_finding_ids.is_empty());
+}
+
+#[test]
 fn observable_development_scenarios_require_decisive_candidate_answers() {
     for (rule, action, relationship, expected_findings) in [
         (
@@ -390,6 +438,18 @@ fn observed_completion_keeps_the_exact_local_rule_and_action_binding() {
     );
     assert_eq!(result.findings.len(), 1);
     assert_eq!(result.findings[0].reference, comparison.reference);
+    assert_eq!(
+        result.findings[0].instruction_excerpt,
+        super::super::super::planning::rule_text_fragment(comparison)
+    );
+    assert_eq!(
+        result.findings[0].action_excerpt,
+        comparison
+            .action
+            .text
+            .get(comparison.action_text_start..comparison.action_text_end)
+            .unwrap()
+    );
     assert!(result.unassessed_comparisons.is_empty());
     assert!(result.pending_rules.is_empty());
 }

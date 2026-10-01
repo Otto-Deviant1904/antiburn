@@ -193,6 +193,7 @@ fn independent_v2_semantic_labels_resolve_to_exact_production_bindings() {
     let mut formats = BTreeMap::new();
     let mut families = BTreeMap::new();
     let mut ids = std::collections::BTreeSet::new();
+    let mut binding_differences = Vec::new();
     for case in &cases {
         assert!(ids.insert(case.id.as_str()), "duplicate semantic case ID");
         *formats.entry(case.format.as_str()).or_insert(0) += 1;
@@ -211,15 +212,24 @@ fn independent_v2_semantic_labels_resolve_to_exact_production_bindings() {
         let (revision, citations, exact) = resolve_case(case);
         let frozen = by_id[case.id.as_str()];
         assert_eq!(frozen["input_hash"], input_hash, "{} input hash", case.id);
-        assert_eq!(frozen["revisions"], revision, "{} revisions", case.id);
-        assert_eq!(frozen["bindings"], json!(exact), "{} bindings", case.id);
-        assert_eq!(
-            frozen["citation_ids"],
-            json!(citations),
-            "{} citations",
-            case.id
-        );
+        for (field, actual) in [
+            ("revisions", json!(revision)),
+            ("bindings", json!(exact)),
+            ("citation_ids", json!(citations)),
+        ] {
+            if frozen[field] != actual {
+                binding_differences.push(format!(
+                    "{} {field}: frozen={}, production={actual}",
+                    case.id, frozen[field]
+                ));
+            }
+        }
     }
+    assert!(
+        binding_differences.is_empty(),
+        "{}",
+        binding_differences.join("\n")
+    );
     assert_eq!(cases.len(), 48);
     assert_eq!(by_id.len(), 48);
     assert_eq!(formats.len(), 6);

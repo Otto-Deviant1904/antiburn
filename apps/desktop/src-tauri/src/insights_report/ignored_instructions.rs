@@ -1,6 +1,73 @@
 use super::findings::CurrentFindingSession;
 use super::*;
 
+pub(crate) fn has_published_sampled_instruction_assessment(
+    data_dir: &Path,
+    request: &ReportRequest,
+) -> Result<bool> {
+    let connection = open_read_only(data_dir, REPORT_BUSY_TIMEOUT)?;
+    has_published_sampled_instruction_assessment_in(&connection, request)
+}
+
+fn has_published_sampled_instruction_assessment_in(
+    connection: &rusqlite::Connection,
+    request: &ReportRequest,
+) -> Result<bool> {
+    let mut statement = connection.prepare(
+        "SELECT e.evidence_json, s.agent, s.session_id, s.incarnation,
+                s.source_generation, s.source_fingerprint, e.published_fence
+           FROM session s
+           JOIN session_evidence e
+             ON e.environment_key = s.environment_key AND e.agent = s.agent
+            AND e.session_id = s.session_id
+           JOIN burn_check_assessment a
+             ON a.environment_key = s.environment_key AND a.agent = s.agent
+            AND a.session_id = s.session_id
+            AND a.check_id = 'ignored_instructions' AND a.status = 'completed'
+            AND a.incarnation = s.incarnation
+            AND a.source_generation = s.source_generation
+            AND a.source_fingerprint IS s.source_fingerprint
+            AND a.published_fence = e.published_fence
+            AND a.input_revision = a.result_revision
+          WHERE s.environment_key = ?1 AND s.started_at_epoch >= ?2
+            AND s.started_at_epoch < ?3 AND e.status = 'ready'
+            AND e.analyzed_generation = s.source_generation
+            AND e.parser_revision = ?4 AND e.analyzer_revision = ?5
+            AND e.evidence_schema_revision = ?6",
+    )?;
+    let mut rows = statement.query(params![
+        request.environment_key,
+        request.window.start_epoch,
+        request.window.end_epoch,
+        PARSER_REVISION,
+        ANALYZER_REVISION,
+        EVIDENCE_SCHEMA_REVISION,
+    ])?;
+    while let Some(row) = rows.next()? {
+        let evidence: SessionEvidence = serde_json::from_str(&row.get::<_, String>(0)?)
+            .context("stored session evidence is invalid")?;
+        let agent: String = row.get(1)?;
+        let session_id: String = row.get(2)?;
+        let source_fingerprint: Option<String> = row.get(5)?;
+        let identity = IgnoredInstructionSessionIdentity {
+            environment_key: &request.environment_key,
+            agent: &agent,
+            session_id: &session_id,
+            incarnation: row.get(3)?,
+            source_generation: row.get(4)?,
+            source_fingerprint: source_fingerprint.as_deref(),
+            published_fence: row.get(6)?,
+        };
+        if ignored_instruction_result_for(connection, &evidence, identity)?
+            .as_ref()
+            .is_some_and(sampled_coverage)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Read the same current assessment used by the report for a bounded session list.
 pub(crate) fn ignored_instruction_session_statuses(
     data_dir: &Path,
@@ -19,7 +86,10 @@ pub(crate) fn ignored_instruction_session_statuses(
                        AND content_turn.agent = s.agent
                        AND content_turn.session_id = s.session_id
                        AND content.kind <> 'thinking' AND length(content.content) > 0
-                 )
+                  ),
+                  (SELECT a.status FROM burn_check_assessment a
+                    WHERE a.environment_key = s.environment_key AND a.agent = s.agent
+                      AND a.session_id = s.session_id AND a.check_id = 'ignored_instructions')
            FROM session s LEFT JOIN session_evidence e
              ON e.environment_key = s.environment_key AND e.agent = s.agent
             AND e.session_id = s.session_id
@@ -49,6 +119,7 @@ pub(crate) fn ignored_instruction_session_statuses(
                             row.get::<_, Option<String>>(5)?,
                             row.get::<_, Option<bool>>(6)?,
                             row.get::<_, bool>(7)?,
+                            row.get::<_, Option<String>>(8)?,
                         ))
                     },
                 )
@@ -62,6 +133,7 @@ pub(crate) fn ignored_instruction_session_statuses(
                 status,
                 current,
                 has_content,
+                assessment_status,
             )) = row
             else {
                 return Ok(ignored_session_status(
@@ -130,6 +202,12 @@ pub(crate) fn ignored_instruction_session_statuses(
                     Some("Waiting for a current instruction assessment."),
                 ));
             };
+            if assessment_status.as_deref() != Some("completed") {
+                return Ok(ignored_session_status(
+                    crate::dto::SessionHygieneStatus::Checking,
+                    Some("Waiting for a current instruction assessment."),
+                ));
+            }
             let Some(session_findings) =
                 ignored_instruction_findings_for_evidence(&evidence, &result)
             else {
@@ -141,12 +219,15 @@ pub(crate) fn ignored_instruction_session_statuses(
             if !session_findings.is_empty() {
                 Ok(ignored_session_status(
                     crate::dto::SessionHygieneStatus::Finding,
-                    None,
+                    sampled_coverage(&result)
+                        .then_some("Reviewed a selected sample of instruction and action pairs."),
                 ))
             } else if ignored_result_has_scoped_no_issues(&result, &session_findings) {
                 Ok(ignored_session_status(
                     crate::dto::SessionHygieneStatus::Clean,
-                    None,
+                    sampled_coverage(&result).then_some(
+                        "No issues found in the selected sample of instruction and action pairs.",
+                    ),
                 ))
             } else {
                 Ok(ignored_session_status(
@@ -168,7 +249,9 @@ fn ignored_session_status(
 fn ignored_assessment_reason(
     result: &antiburn_local::analysis::ignored_instructions::AssessmentResult,
 ) -> &'static str {
-    if result.coverage.processing_limit_reached || result.coverage.unselected_pairs > 0 {
+    if !sampled_coverage(result)
+        && (result.coverage.processing_limit_reached || result.coverage.unselected_pairs > 0)
+    {
         "The assessment limit prevented checking every eligible rule and action."
     } else if result
         .coverage
@@ -176,6 +259,13 @@ fn ignored_assessment_reason(
         .contains(&"current_file_not_historical_proof".to_owned())
     {
         "Current instruction files do not prove which rules applied during this session."
+    } else if result
+        .coverage
+        .limitations
+        .iter()
+        .any(|limit| limit == "historical_instruction_snapshot_unavailable")
+    {
+        "No recorded instruction snapshot proves which rules applied during this session."
     } else if result
         .coverage
         .limitations
@@ -234,7 +324,7 @@ pub(crate) fn ignored_instruction_result_for(
     }
     let stored = connection
         .query_row(
-            "SELECT result_revision, result_json
+            "SELECT result_revision, result_json, input_revision, status
                FROM burn_check_assessment
               WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
                 AND check_id = ?4 AND incarnation = ?5 AND source_generation = ?6
@@ -255,11 +345,13 @@ pub(crate) fn ignored_instruction_result_for(
                 Ok((
                     row.get::<_, Option<String>>(0)?,
                     row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
                 ))
             },
         )
         .optional()?;
-    let Some((Some(revision), Some(result_json))) = stored else {
+    let Some((Some(revision), Some(result_json), input_revision, status)) = stored else {
         return Ok(None);
     };
     let Ok(result) = serde_json::from_str::<
@@ -270,6 +362,12 @@ pub(crate) fn ignored_instruction_result_for(
     if result.input_revision != revision
         || result.model_version != antiburn_local::analysis::ignored_instructions::ASSESSMENT_MODEL
         || ignored_instruction_findings_for_evidence(evidence, &result).is_none()
+    {
+        return Ok(None);
+    }
+    if input_revision.as_deref() != Some(revision.as_str())
+        || (status != "completed" && status != "failed")
+        || (status == "failed" && result.findings.is_empty())
     {
         return Ok(None);
     }
@@ -349,12 +447,232 @@ pub(crate) fn ignored_result_has_scoped_no_issues(
     result: &antiburn_local::analysis::ignored_instructions::AssessmentResult,
     findings: &[Finding],
 ) -> bool {
+    let sampled = sampled_coverage(result);
     findings.is_empty()
-        && result.coverage.unselected_pairs == 0
+        && (sampled || result.coverage.unselected_pairs == 0)
         && result.coverage.skipped_rules.is_empty()
         && result.coverage.skipped_actions.is_empty()
-        && !result.coverage.processing_limit_reached
-        && result.coverage.limitations.is_empty()
+        && (sampled || !result.coverage.processing_limit_reached)
+        && result.coverage.limitations.iter().all(|limit| {
+            sampled
+                && matches!(
+                    limit.as_str(),
+                    "sampled_candidate_selection"
+                        | "sampled_content_selection"
+                        | "assessment_candidate_limit"
+                )
+        })
         && result.pending_rules.is_empty()
         && result.unassessed_comparisons.is_empty()
+        && (result.coverage.selected_comparisons > 0
+            || (result.coverage.eligible_rules == 0 && result.coverage.candidate_pairs == 0))
+}
+
+fn sampled_coverage(
+    result: &antiburn_local::analysis::ignored_instructions::AssessmentResult,
+) -> bool {
+    result.coverage.sampled_pass && result.coverage.selector_revision > 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use antiburn_local::analysis::ignored_instructions::{
+        ASSESSMENT_MODEL, AssessmentCoverage, AssessmentResult,
+    };
+    use antiburn_local::analysis::{
+        EvidenceSource, SessionEvidenceAccumulator, SourceCapabilities, SourceKind, TurnFacts,
+    };
+
+    fn result() -> AssessmentResult {
+        AssessmentResult {
+            input_revision: "synthetic".into(),
+            model_version: ASSESSMENT_MODEL.into(),
+            findings: Vec::new(),
+            pending_rules: Vec::new(),
+            unassessed_comparisons: Vec::new(),
+            coverage: AssessmentCoverage {
+                eligible_rules: 2,
+                candidate_pairs: 12,
+                selected_comparisons: 4,
+                unselected_pairs: 8,
+                skipped_rules: Vec::new(),
+                skipped_actions: Vec::new(),
+                processing_limit_reached: false,
+                sampled_pass: true,
+                selector_revision: 1,
+                limitations: vec!["sampled_candidate_selection".into()],
+                reassessed_comparison_ids: Vec::new(),
+                reassessed_rule_ids: Vec::new(),
+                reassessed_finding_ids: Vec::new(),
+                instruction_sources: Vec::new(),
+            },
+            request_count: 1,
+            input_tokens: 10,
+            output_tokens: 2,
+        }
+    }
+
+    #[test]
+    fn sampled_no_finding_is_ordinary_clean_after_the_bounded_pass() {
+        let result = result();
+        assert!(ignored_result_has_scoped_no_issues(&result, &[]));
+        let restored: AssessmentResult =
+            serde_json::from_str(&serde_json::to_string(&result).unwrap()).unwrap();
+        assert!(ignored_result_has_scoped_no_issues(&restored, &[]));
+    }
+
+    #[test]
+    fn sampling_does_not_hide_evidence_or_provider_failures() {
+        let mut result = result();
+        result
+            .coverage
+            .limitations
+            .push("source_evidence_is_partial".into());
+        assert!(!ignored_result_has_scoped_no_issues(&result, &[]));
+        result.coverage.limitations.pop();
+        result.unassessed_comparisons.push("comparison".into());
+        assert!(!ignored_result_has_scoped_no_issues(&result, &[]));
+        result.unassessed_comparisons.clear();
+        result.coverage.selector_revision = 0;
+        assert!(!ignored_result_has_scoped_no_issues(&result, &[]));
+    }
+
+    #[test]
+    fn category_sampling_requires_a_current_completed_assessment_in_the_window() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE session (
+                    environment_key TEXT, agent TEXT, session_id TEXT,
+                    incarnation INTEGER, source_generation INTEGER,
+                    source_fingerprint TEXT, started_at_epoch INTEGER);
+                 CREATE TABLE session_evidence (
+                    environment_key TEXT, agent TEXT, session_id TEXT,
+                    evidence_json TEXT, published_fence INTEGER, status TEXT,
+                    analyzed_generation INTEGER, parser_revision INTEGER,
+                    analyzer_revision INTEGER, evidence_schema_revision INTEGER);
+                 CREATE TABLE burn_check_assessment (
+                    environment_key TEXT, agent TEXT, session_id TEXT, check_id TEXT,
+                    incarnation INTEGER, source_generation INTEGER, source_fingerprint TEXT,
+                    published_fence INTEGER, status TEXT, input_revision TEXT,
+                    result_revision TEXT, result_json TEXT);
+                 INSERT INTO session VALUES
+                    ('native', 'claude-code', 'sampled', 1, 1, 'fingerprint', 120);",
+            )
+            .unwrap();
+        let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
+            agent: "claude-code".into(),
+            session_id: "sampled".into(),
+            kind: SourceKind::File,
+            capabilities: SourceCapabilities::claude(),
+        })
+        .evidence(&TurnFacts::default());
+        connection
+            .execute(
+                "INSERT INTO session_evidence VALUES
+                 ('native', 'claude-code', 'sampled', ?1, 7, 'ready', 1, ?2, ?3, ?4)",
+                params![
+                    serde_json::to_string(&evidence).unwrap(),
+                    PARSER_REVISION,
+                    ANALYZER_REVISION,
+                    EVIDENCE_SCHEMA_REVISION
+                ],
+            )
+            .unwrap();
+        let sampled = result();
+        connection
+            .execute(
+                "INSERT INTO burn_check_assessment VALUES
+                 ('native', 'claude-code', 'sampled', 'ignored_instructions',
+                  1, 1, 'fingerprint', 7, 'completed', 'synthetic', 'synthetic', ?1)",
+                [serde_json::to_string(&sampled).unwrap()],
+            )
+            .unwrap();
+        let request = ReportRequest {
+            environment_key: "native".into(),
+            window: ReportWindow {
+                start_epoch: 100,
+                end_epoch: 200,
+            },
+            computed_at_epoch: 200,
+        };
+        let has_sampled =
+            || has_published_sampled_instruction_assessment_in(&connection, &request).unwrap();
+        assert!(has_sampled());
+
+        for status in ["queued", "running", "failed", "superseded"] {
+            connection
+                .execute("UPDATE burn_check_assessment SET status = ?1", [status])
+                .unwrap();
+            assert!(!has_sampled(), "{status} cannot publish sampling");
+        }
+        connection
+            .execute("UPDATE burn_check_assessment SET status = 'completed'", [])
+            .unwrap();
+        for column in ["incarnation", "source_generation", "published_fence"] {
+            connection
+                .execute(
+                    &format!("UPDATE burn_check_assessment SET {column} = 99"),
+                    [],
+                )
+                .unwrap();
+            assert!(!has_sampled(), "stale {column} cannot publish sampling");
+            connection
+                .execute(
+                    &format!("UPDATE burn_check_assessment SET {column} = ?1"),
+                    [if column == "published_fence" { 7 } else { 1 }],
+                )
+                .unwrap();
+        }
+        connection
+            .execute(
+                "UPDATE burn_check_assessment SET input_revision = 'new'",
+                [],
+            )
+            .unwrap();
+        assert!(!has_sampled());
+        connection
+            .execute(
+                "UPDATE burn_check_assessment SET input_revision = 'synthetic'",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE burn_check_assessment SET result_revision = 'old'",
+                [],
+            )
+            .unwrap();
+        assert!(!has_sampled());
+        connection
+            .execute(
+                "UPDATE burn_check_assessment SET result_revision = 'synthetic'",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute("UPDATE session_evidence SET status = 'pending'", [])
+            .unwrap();
+        assert!(!has_sampled());
+        connection
+            .execute("UPDATE session_evidence SET status = 'ready'", [])
+            .unwrap();
+        connection
+            .execute("UPDATE session SET started_at_epoch = 200", [])
+            .unwrap();
+        assert!(!has_sampled());
+        connection
+            .execute("UPDATE session SET started_at_epoch = 120", [])
+            .unwrap();
+        let mut not_sampled = sampled;
+        not_sampled.coverage.sampled_pass = false;
+        connection
+            .execute(
+                "UPDATE burn_check_assessment SET result_json = ?1",
+                [serde_json::to_string(&not_sampled).unwrap()],
+            )
+            .unwrap();
+        assert!(!has_sampled());
+    }
 }

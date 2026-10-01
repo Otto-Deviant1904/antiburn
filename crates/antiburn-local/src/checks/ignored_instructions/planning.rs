@@ -8,12 +8,14 @@ use super::assessment::{
     ASSESSMENT_CHUNKING_REVISION, ASSESSMENT_MODEL, ASSESSMENT_PROJECTION_REVISION,
     ASSESSMENT_QUESTION_REVISION, ASSESSMENT_REDUCER_REVISION, AssessmentCoverage, AssessmentInput,
     AssessmentPlan, CandidateComparison, CounterEvidence, INPUT_SELECTION,
-    InstructionSourceCoverage, MAX_ASSESSMENT_CANDIDATES, RuleActionRef,
+    InstructionSourceCoverage, MAX_ASSESSMENT_CANDIDATES, MAX_SAMPLED_COMPARISONS_PER_PASS,
+    RuleActionRef,
 };
 use super::evidence::{ContentAction, content_action_digest};
 use super::instructions::{
     InstructionContentClass, InstructionRuleSection, InstructionSnapshot, sha256_hex,
 };
+use crate::analysis::jev::exact_facts::ExactActionFacts;
 use crate::analysis::jev::{JevError, JevSessionContext};
 
 const MAX_CONTEXT_EVENTS: usize = 3;
@@ -28,16 +30,31 @@ type RuleRange<'a> = (
     usize,
 );
 type ActionRange<'a> = (&'a ContentAction, usize, usize);
+const SELECTOR_REVISION: u32 = 2;
+
+/// Completed comparisons and actions from earlier reviews. Keep the ledger
+/// unchanged while advancing pages of the current pass.
+#[derive(Debug, Clone, Default)]
+pub struct SamplingLedger {
+    pub comparison_ids: BTreeSet<String>,
+    pub known_action_ids: BTreeSet<String>,
+}
 
 /// Attach the bounded rule/action plan without duplicating its private content.
 pub fn build_jev_context(input: &AssessmentInput) -> Result<JevSessionContext, JevError> {
-    let plan = build_assessment_plan(input.clone());
+    build_jev_context_with_sampling(input, &SamplingLedger::default())
+}
+
+pub fn build_jev_context_with_sampling(
+    input: &AssessmentInput,
+    ledger: &SamplingLedger,
+) -> Result<JevSessionContext, JevError> {
+    let plan = build_assessment_plan_with_sampling(input.clone(), ledger);
     let input_revision = plan.input_revision.clone();
     let session_identity = plan.session_identity_digest.clone();
     let limitations = plan.coverage.limitations.clone();
     let check_context = serde_json::json!({"assessment_plan": plan, "incremental_identity": {
         "incarnation": input.incarnation,
-        "source_generation": input.source_generation,
         "source_format": input.content.source_format,
         "activity_after_ms": input.activity_after_ms,
         "boundary_positions": input.boundary_positions,
@@ -133,6 +150,13 @@ pub fn extend_jev_context_with_history(
 
 /// Prepare one immutable comparison per selected rule/action pair.
 pub fn build_assessment_plan(input: AssessmentInput) -> AssessmentPlan {
+    build_assessment_plan_with_sampling(input, &SamplingLedger::default())
+}
+
+pub fn build_assessment_plan_with_sampling(
+    input: AssessmentInput,
+    ledger: &SamplingLedger,
+) -> AssessmentPlan {
     let content = &input.content;
     let mut limitations = content.limitations.clone();
     let skipped_rules = content
@@ -151,6 +175,15 @@ pub fn build_assessment_plan(input: AssessmentInput) -> AssessmentPlan {
         .collect::<Vec<_>>();
     if !skipped_rules.is_empty() {
         limitations.push("instruction_rule_not_evaluable".to_owned());
+    }
+    let skipped_actions = content
+        .actions
+        .iter()
+        .filter(|action| is_agent_action(action) && !has_selected_action_content(action))
+        .map(|action| action.reference.id.clone())
+        .collect::<Vec<_>>();
+    if !skipped_actions.is_empty() {
+        limitations.push("empty_selected_action_content".to_owned());
     }
     let rule_groups: Vec<Vec<_>> =
         content
@@ -198,6 +231,7 @@ pub fn build_assessment_plan(input: AssessmentInput) -> AssessmentPlan {
                         }),
                     })
         })
+        .filter(|action| has_selected_action_content(action))
         .flat_map(|action| {
             action_text_ranges(&action.text)
                 .into_iter()
@@ -224,18 +258,33 @@ pub fn build_assessment_plan(input: AssessmentInput) -> AssessmentPlan {
         })
         .collect::<Vec<_>>();
     let evaluable_rules = rules.as_slice();
-    let candidate_pairs = evaluable_rules.len().saturating_mul(actions.len());
-    let start = input
-        .comparison_after
-        .as_deref()
-        .and_then(|cursor| cursor.strip_prefix("pair:"))
-        .and_then(|offset| offset.parse::<usize>().ok())
-        .filter(|offset| *offset <= candidate_pairs)
-        .unwrap_or(0);
-    let comparisons = select_comparisons(
+    let candidate_pairs = rules.len().saturating_mul(actions.len());
+    let previously_sampled = if ledger.comparison_ids.is_empty() {
+        0
+    } else {
+        rules
+            .iter()
+            .map(|(instruction, rule, start, end)| {
+                actions
+                    .iter()
+                    .filter(|(action, action_start, action_end)| {
+                        ledger.comparison_ids.contains(&comparison_identity(
+                            instruction,
+                            rule,
+                            action,
+                            (*start, *end),
+                            (*action_start, *action_end),
+                        ))
+                    })
+                    .count()
+            })
+            .sum::<usize>()
+    };
+    let selection = select_comparisons(
         evaluable_rules,
         &actions,
-        start,
+        ledger,
+        input.comparison_after.as_deref(),
         &ComparisonIndex {
             prior_history_complete: input.prior_history_complete,
             branch_order: &branch_order.actions_by_branch,
@@ -245,6 +294,7 @@ pub fn build_assessment_plan(input: AssessmentInput) -> AssessmentPlan {
             action_terms: &action_terms_by_id,
         },
     );
+    let comparisons = selection.comparisons;
     let mut rules_by_source = BTreeMap::<String, BTreeSet<(String, String)>>::new();
     let mut ranges_by_source = BTreeMap::<String, usize>::new();
     for instruction in &content.instructions {
@@ -255,20 +305,20 @@ pub fn build_assessment_plan(input: AssessmentInput) -> AssessmentPlan {
             .entry(instruction.source.clone())
             .or_default();
     }
-    for (instruction, rule, _, _) in evaluable_rules {
+    for (instruction, rule, _, _) in evaluable_rules.iter() {
         rules_by_source
             .entry(instruction.source.clone())
             .or_default()
             .insert((instruction.id.clone(), rule.id.clone()));
         *ranges_by_source
             .entry(instruction.source.clone())
-            .or_default() += 1;
+            .or_default() += actions.len();
     }
     let mut instruction_sources = ranges_by_source
         .into_iter()
-        .map(|(source, rule_ranges)| InstructionSourceCoverage {
+        .map(|(source, candidate_pairs)| InstructionSourceCoverage {
             eligible_rules: rules_by_source.get(&source).map_or(0, BTreeSet::len),
-            candidate_pairs: rule_ranges.saturating_mul(actions.len()),
+            candidate_pairs,
             selected_comparisons: 0,
             source,
         })
@@ -292,13 +342,12 @@ pub fn build_assessment_plan(input: AssessmentInput) -> AssessmentPlan {
             )
         })
         .collect();
-    let end = start.saturating_add(comparisons.len());
-    let processing_limit_reached = end < candidate_pairs;
-    if processing_limit_reached {
-        limitations.push("assessment_candidate_limit".to_owned());
+    let unselected_pairs = candidate_pairs.saturating_sub(previously_sampled + selection.page_end);
+    let sampled_pass = unselected_pairs > 0;
+    if sampled_pass {
+        limitations.push("sampled_candidate_selection".to_owned());
     }
-    let unselected_pairs = candidate_pairs.saturating_sub(end);
-    let next_comparison_cursor = (end < candidate_pairs).then(|| format!("pair:{end}"));
+    let next_comparison_cursor = selection.next_cursor;
 
     let mut unique_rules = BTreeSet::new();
     for (instruction, rule, _, _) in rules {
@@ -308,14 +357,6 @@ pub fn build_assessment_plan(input: AssessmentInput) -> AssessmentPlan {
     revision_hasher.update(content.selected_input_digest.as_bytes());
     revision_hasher.update(b"\0");
     revision_hasher.update(input.incarnation.to_string().as_bytes());
-    revision_hasher.update(
-        input
-            .comparison_after
-            .as_deref()
-            .unwrap_or_default()
-            .as_bytes(),
-    );
-    revision_hasher.update(b"\0");
     revision_hasher.update(input.source_generation.to_string().as_bytes());
     revision_hasher.update(b"\0");
     revision_hasher.update(content.publication_fence.to_string().as_bytes());
@@ -347,6 +388,17 @@ pub fn build_assessment_plan(input: AssessmentInput) -> AssessmentPlan {
     revision_hasher.update(ASSESSMENT_QUESTION_REVISION.to_string().as_bytes());
     revision_hasher.update(b"\0");
     revision_hasher.update(ASSESSMENT_REDUCER_REVISION.to_string().as_bytes());
+    revision_hasher.update(b"\0selector:");
+    revision_hasher.update(SELECTOR_REVISION.to_string().as_bytes());
+    for id in &ledger.comparison_ids {
+        revision_hasher.update(id.as_bytes());
+    }
+    for id in &ledger.known_action_ids {
+        revision_hasher.update(id.as_bytes());
+    }
+    if let Some(cursor) = &input.comparison_after {
+        revision_hasher.update(cursor.as_bytes());
+    }
     let input_revision = digest_to_hex(revision_hasher.finalize().as_slice());
     limitations.sort();
     limitations.dedup();
@@ -379,11 +431,13 @@ pub fn build_assessment_plan(input: AssessmentInput) -> AssessmentPlan {
         coverage: AssessmentCoverage {
             eligible_rules: unique_rules.len(),
             candidate_pairs,
-            selected_comparisons: end.saturating_sub(start),
+            selected_comparisons: comparisons.len(),
             unselected_pairs,
             skipped_rules,
-            skipped_actions: Vec::new(),
-            processing_limit_reached,
+            skipped_actions,
+            processing_limit_reached: false,
+            sampled_pass,
+            selector_revision: SELECTOR_REVISION,
             limitations,
             reassessed_comparison_ids: Vec::new(),
             reassessed_rule_ids: Vec::new(),
@@ -406,95 +460,190 @@ struct ComparisonIndex<'a> {
 fn select_comparisons<'a>(
     rules: &[RuleRange<'a>],
     actions: &[ActionRange<'a>],
-    start: usize,
+    ledger: &SamplingLedger,
+    cursor: Option<&str>,
     index: &ComparisonIndex<'a>,
-) -> Vec<CandidateComparison> {
-    if rules.is_empty() || actions.is_empty() || start >= rules.len().saturating_mul(actions.len())
-    {
-        return Vec::new();
+) -> SampleSelection {
+    if rules.is_empty() || actions.is_empty() {
+        return SampleSelection::default();
     }
-    let starts = candidate_shell_starts(rules.len(), actions.len());
-    let first_diagonal = starts
-        .partition_point(|offset| *offset <= start)
-        .saturating_sub(1);
-    let first_shell_offset = start.saturating_sub(starts[first_diagonal]);
-    let mut comparisons = Vec::with_capacity(MAX_ASSESSMENT_CANDIDATES);
-    for diagonal in first_diagonal..rules.len().max(actions.len()) {
-        let skip = if diagonal == first_diagonal {
-            first_shell_offset
-        } else {
-            0
+    let action_terms = actions
+        .iter()
+        .map(|(action, start, end)| {
+            let mut terms = meaningful_terms(&action.text[*start..*end]);
+            terms.extend(index.action_terms[&action.reference.id].iter().cloned());
+            if let Some(fields) = &action.normalized_fields {
+                for value in fields.values.values() {
+                    terms.extend(meaningful_terms(value));
+                }
+            }
+            terms
+        })
+        .collect::<Vec<_>>();
+    let mut document_frequency = BTreeMap::<&str, usize>::new();
+    for terms in &action_terms {
+        for term in terms {
+            *document_frequency.entry(term).or_default() += 1;
+        }
+    }
+    let action_paths = actions
+        .iter()
+        .map(|(action, _, _)| {
+            ExactActionFacts::from_selected(
+                action.tool_name.as_deref(),
+                action.normalized_fields.as_ref(),
+            )
+            .paths
+        })
+        .collect::<Vec<_>>();
+    let mut ranked = Vec::with_capacity(rules.len());
+    for (rule_index, (_, rule, start, end)) in rules.iter().enumerate() {
+        let terms = &index.rule_terms[rule_index];
+        let rule_text = &rule.text[*start..*end];
+        let mut scores = (0..actions.len())
+            .map(|action_index| {
+                let (action, _, _) = actions[action_index];
+                let overlap = terms
+                    .iter()
+                    .filter(|term| action_terms[action_index].contains(*term))
+                    .map(|term| 1000 / (1 + document_frequency[term.as_str()]))
+                    .sum::<usize>();
+                let tool_match = action.tool_name.as_deref().is_some_and(|name| {
+                    rule_text
+                        .to_ascii_lowercase()
+                        .contains(&name.to_ascii_lowercase())
+                });
+                let path_match = action_paths[action_index]
+                    .iter()
+                    .any(|path| rule_text.contains(path));
+                let risk = usize::from(
+                    ["never", "Never", "Do not", "must not"]
+                        .iter()
+                        .any(|word| rule_text.contains(word)),
+                ) * usize::from(action.kind == "tool_input");
+                let fresh = action_index * 16 / actions.len();
+                let score = overlap.saturating_mul(8)
+                    + usize::from(tool_match) * 800
+                    + usize::from(path_match) * 1200
+                    + risk * 12
+                    + fresh;
+                (score, action_index)
+            })
+            .collect::<Vec<_>>();
+        scores.sort_unstable_by(|left, right| {
+            right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1))
+        });
+        ranked.push(scores);
+    }
+    let limit = MAX_SAMPLED_COMPARISONS_PER_PASS.min(rules.len().saturating_mul(actions.len()));
+    let mut chosen = Vec::with_capacity(limit);
+    let mut used = BTreeSet::new();
+    let mut action_counts = vec![0usize; actions.len()];
+    // Complete the new-action tier before drawing from the older backlog.
+    for new_only in [true, false] {
+        if new_only && ledger.known_action_ids.is_empty() {
+            continue;
+        }
+        let eligible = |rule_index: usize, action_index: usize, used: &BTreeSet<(usize, usize)>| {
+            let (instruction, rule, start, end) = rules[rule_index];
+            let (action, action_start, action_end) = actions[action_index];
+            !used.contains(&(rule_index, action_index))
+                && (!new_only || !ledger.known_action_ids.contains(&action.reference.id))
+                && (ledger.comparison_ids.is_empty()
+                    || !ledger.comparison_ids.contains(&comparison_identity(
+                        instruction,
+                        rule,
+                        action,
+                        (start, end),
+                        (action_start, action_end),
+                    )))
         };
-        let shell_size = candidate_shell_size(rules.len(), actions.len(), diagonal);
-        for shell_index in skip..shell_size {
-            let rule_index = if diagonal < actions.len()
-                && shell_index < diagonal.min(rules.len().saturating_sub(1)) + 1
-            {
-                shell_index.min(rules.len() - 1)
-            } else {
-                diagonal
-            };
-            let (instruction, rule, rule_start, rule_end) = rules[rule_index];
-            let candidate = if diagonal < actions.len()
-                && shell_index < diagonal.min(rules.len().saturating_sub(1)) + 1
-            {
-                let (action, action_start, action_end) = actions[diagonal];
-                (
-                    instruction,
-                    rule,
-                    rule_index,
-                    rule_start,
-                    rule_end,
-                    action,
-                    action_start,
-                    action_end,
-                )
-            } else {
-                let row_index = shell_index
-                    - if diagonal < actions.len() {
-                        diagonal.min(rules.len().saturating_sub(1)) + 1
-                    } else {
-                        0
-                    };
-                let (action, action_start, action_end) = actions[row_index];
-                (
-                    instruction,
-                    rule,
-                    rule_index,
-                    rule_start,
-                    rule_end,
-                    action,
-                    action_start,
-                    action_end,
-                )
-            };
-            let (
-                instruction,
-                rule,
-                rule_index,
-                rule_start,
-                rule_end,
-                action,
-                action_start,
-                action_end,
-            ) = candidate;
-            comparisons.push(make_comparison(
-                CandidateCoordinate {
-                    instruction,
-                    rule,
-                    rule_range: (rule_start, rule_end),
-                    action,
-                    action_range: (action_start, action_end),
-                },
-                index,
-                &index.rule_terms[rule_index],
-            ));
-            if comparisons.len() == MAX_ASSESSMENT_CANDIDATES {
-                return comparisons;
+        // Reserve one relevant candidate and one low-overlap probe per rule.
+        for probe in [false, true] {
+            for (rule_index, scores) in ranked.iter().enumerate() {
+                if chosen.len() == limit {
+                    break;
+                }
+                if let Some(&(_, action_index)) = scores.iter().find(|(score, action_index)| {
+                    (*score < 16) == probe
+                        && action_counts[*action_index] < 3
+                        && eligible(rule_index, *action_index, &used)
+                }) {
+                    used.insert((rule_index, action_index));
+                    action_counts[action_index] += 1;
+                    chosen.push((rule_index, action_index));
+                }
+            }
+        }
+        let mut positions = vec![0usize; rules.len()];
+        while chosen.len() < limit {
+            let mut advanced = false;
+            for (rule_index, scores) in ranked.iter().enumerate() {
+                while let Some(&(_, action_index)) = scores.get(positions[rule_index]) {
+                    positions[rule_index] += 1;
+                    if eligible(rule_index, action_index, &used) {
+                        used.insert((rule_index, action_index));
+                        action_counts[action_index] += 1;
+                        chosen.push((rule_index, action_index));
+                        advanced = true;
+                        break;
+                    }
+                }
+                if chosen.len() == limit {
+                    break;
+                }
+            }
+            if !advanced {
+                break;
             }
         }
     }
-    comparisons
+    let offset = cursor
+        .and_then(|value| value.strip_prefix("sample:"))
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    let end = offset
+        .saturating_add(MAX_ASSESSMENT_CANDIDATES)
+        .min(chosen.len());
+    SampleSelection {
+        page_end: end,
+        next_cursor: (end < chosen.len()).then(|| format!("sample:{end}")),
+        comparisons: chosen
+            .get(offset..end)
+            .unwrap_or_default()
+            .iter()
+            .map(|&(rule, action)| comparison_at(rules, actions, rule, action, index))
+            .collect(),
+    }
+}
+
+#[derive(Default)]
+struct SampleSelection {
+    comparisons: Vec<CandidateComparison>,
+    page_end: usize,
+    next_cursor: Option<String>,
+}
+
+fn comparison_at<'a>(
+    rules: &[RuleRange<'a>],
+    actions: &[ActionRange<'a>],
+    rule_index: usize,
+    action_index: usize,
+    index: &ComparisonIndex<'a>,
+) -> CandidateComparison {
+    let (instruction, rule, rule_start, rule_end) = rules[rule_index];
+    let (action, action_start, action_end) = actions[action_index];
+    make_comparison(
+        CandidateCoordinate {
+            instruction,
+            rule,
+            rule_range: (rule_start, rule_end),
+            action,
+            action_range: (action_start, action_end),
+        },
+        index,
+        &index.rule_terms[rule_index],
+    )
 }
 
 pub(super) struct BranchOrderIndex<'a> {
@@ -523,32 +672,6 @@ pub(super) fn branch_order_index(actions: &[ContentAction]) -> BranchOrderIndex<
         branch.push(action);
     }
     index
-}
-
-fn candidate_shell_starts(rule_count: usize, action_count: usize) -> Vec<usize> {
-    let dimensions = rule_count.max(action_count);
-    let mut starts = Vec::with_capacity(dimensions + 1);
-    let mut offset = 0usize;
-    for diagonal in 0..dimensions {
-        starts.push(offset);
-        offset = offset.saturating_add(candidate_shell_size(rule_count, action_count, diagonal));
-    }
-    starts.push(offset);
-    starts
-}
-
-fn candidate_shell_size(rule_count: usize, action_count: usize, diagonal: usize) -> usize {
-    let action_column = if action_count > 0 && diagonal < action_count && rule_count > 0 {
-        diagonal.min(rule_count - 1) + 1
-    } else {
-        0
-    };
-    let rule_row = if diagonal < rule_count {
-        diagonal.min(action_count)
-    } else {
-        0
-    };
-    action_column.saturating_add(rule_row)
 }
 
 /// Add earlier normalized events from an older content page to one saved
@@ -645,6 +768,14 @@ fn is_agent_action(action: &ContentAction) -> bool {
             action.kind.as_str(),
             "assistant" | "assistant_text" | "tool_input"
         )
+}
+
+fn has_selected_action_content(action: &ContentAction) -> bool {
+    !action.text.is_empty()
+        || action
+            .normalized_fields
+            .as_ref()
+            .is_some_and(|fields| !fields.values.is_empty())
 }
 
 fn action_meaningful_terms(action: &ContentAction) -> BTreeSet<String> {
@@ -908,7 +1039,9 @@ fn counter_event_with_range(
         timestamp_ms: action.timestamp_ms,
         tool_name: action.tool_name.clone(),
         text,
-        truncated: action.truncated || text_truncated,
+        truncated: action.truncated
+            || text_truncated
+            || range.is_some_and(|(start, end)| start != 0 || end != action.text.len()),
     }
 }
 

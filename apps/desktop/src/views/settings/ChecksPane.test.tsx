@@ -296,6 +296,29 @@ it("keeps the checking denominator stable while sessions change status", async (
   await screen.findByText("Checking sessions; 0/14 sessions checked so far")
 })
 
+it("confirms when every session in the history run finished", async () => {
+  getAvailability.mockResolvedValue({
+    ...emptyAvailability,
+    historyDays: 7,
+    backfill: { ...emptyAvailability.backfill, total: 10, completed: 10 },
+  })
+  render(<ChecksPane />)
+  expect(await screen.findByText("Finished checking 10 sessions")).toBeVisible()
+
+  act(() =>
+    availabilityEvent.callback?.({
+      status: "updated",
+      snapshot: {
+        ...emptyAvailability,
+        historyDays: 7,
+        backfill: { ...emptyAvailability.backfill, total: 11, completed: 10, ready: 1 },
+      },
+    }),
+  )
+  expect(screen.queryByText("Finished checking 10 sessions")).not.toBeInTheDocument()
+  expect(screen.getByText("1 waiting to be checked · 10 sessions checked")).toBeVisible()
+})
+
 it("keeps setup, history, and the API key in separate plain-language groups", () => {
   render(<ChecksPane />)
   expect(screen.getByRole("heading", { name: "Smart Burn Checks" })).toBeInTheDocument()

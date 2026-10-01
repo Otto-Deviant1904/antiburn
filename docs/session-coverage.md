@@ -58,8 +58,8 @@ digests bind the selected normalized messages, instruction snapshots, parser
 revision, and publication fence. A complete directory scan means only that the
 adapter finished its known paths; it does not establish historical activation.
 Markdown lists with more than 256 top-level items stay grouped as one rule
-block to avoid repeating shared context; the assessment still sends every
-overlapping text range from that block.
+block to avoid repeating shared context. Selection may leave some ranges from
+that block unchecked.
 Leading YAML frontmatter is kept in the full source digest and attached to its
 rule sections instead of becoming a separate requirement. The section line
 ranges keep their original file line numbers. Agent adapters retain any
@@ -87,29 +87,40 @@ All six supported first-tier adapters discover the user-global `~/AGENTS.md` and
 applicable project `AGENTS.md` files in the session worktree in the same
 assessment. They also retain each agent's supported global and project
 instruction paths and override behavior. OpenCode additionally discovers
-`~/.config/opencode/AGENTS.md`. The bounded comparison order interleaves eligible
-rules by instruction source, so one large file does not consume every early
-page. Rule identity uses source, heading, and exact section text rather than
-line position; moving a rule does not split the same target, while global and
-project sources remain separate.
+`~/.config/opencode/AGENTS.md`. Sampling interleaves eligible rules by source,
+so one large file does not consume every early choice. Rule identity uses
+source, heading, and exact section text rather than line position; moving a
+rule does not split the same target, while global and project sources remain
+separate. The worker records an instruction digest and session source positions
+when it observes a complete instruction set. A changed set governs later
+actions only. The first observation cannot prove when it became active.
 
 The optional Ignored Instructions worker uses these bounded local inputs to
 prepare Jev requests after the user supplies an API key. It splits long rule
-text and action text into overlapping byte ranges, then resumes fixed-size
-batches until it covers every eligible rule/assistant-text or tool-input pair
-and content page. Its input projection selects assistant text, Bash command
+text and action text into overlapping byte ranges, then samples up to 256
+high-priority rule/action pairs per review. Selection can omit lower-priority
+work, including range combinations. Word rarity, tool names, literal paths,
+prohibition/tool-input risk, and recency rank candidates. Choices spread across
+rules and sources and include low-overlap probes; none of these signals prove
+irrelevance. On later reviews new activity leads, then older pairs not yet
+sampled. The remaining gap decreases without new work and can grow after an
+append. Its input projection selects assistant text, Bash command
 input, file-edit paths, read-file paths, search queries with scope, and other
 tool inputs. It excludes user messages, edit content, read/search/command output,
-and other tool results. Jev receives each bounded selected text range; the local
-cursor stores which ranges completed. Selected paths can leave the machine
+and other tool results. Jev receives bounded sampled ranges; durable pair
+identities and typed answers allow compatible work to survive completed
+reviews, appends, and restarts. Reuse checks selected input, source binding,
+context, model, and revision. Selected paths can leave the machine
 through those requests. Store page caps run before field projection, so
 output-heavy truncation can still conservatively prevent a clean result when the
 omitted field is unknown. The instruction files are current snapshots; the
 worker does not reconstruct recorded historical injection from session fields,
 and a read path alone does not provide historical file contents. These
-snapshots cannot prove what the model received when an older session ran. A user
-can select a 7-day or
-30-day session-activity window in Settings, but this does not create a historical
+snapshots cannot prove what the model received when an older session ran. Clean
+means no finding among sampled comparisons, not that all content is safe.
+Incomplete source evidence and provider errors differ from a sampling gap and
+cannot produce Clean. A user can select a 7-day or 30-day session-activity
+window in Settings, but this does not create a historical
 instruction snapshot. No additional `SourceFormat` is accepted by this request
 path.
 
@@ -125,8 +136,10 @@ message and result text remains observed, while non-text result blocks do not
 become text. This is a native-shape contract, not a new producer-version range.
 Bash context retains
 recorded CWD, workdir, shell, login, and timeout scalars without outputs. Search
-constraints reject arbitrary nested objects. Patch renames retain both paths
-and exclude path headers from content-only selection. Native equivalent-event
+constraints reject arbitrary nested objects. Recorded `patchText` in an
+OpenCode `apply_patch` request supplies patch operations and edit paths; empty
+or malformed input does not supply a path. Patch renames retain both paths and
+exclude path headers from content-only selection. Native equivalent-event
 fixtures cover all six admitted formats through fenced storage. OpenCode's
 SQLite lifecycle fixture separates pending/running requests from completed
 output and error text. Its typed native lifecycle labels now survive selected
@@ -228,7 +241,7 @@ Dedicated reader registration alone does not establish usable session analysis.
 
 ## Source Matrix
 
-The table lists all 34 `SourceFormat` names from
+The table lists all 33 `SourceFormat` names from
 `crates/antiburn-local/src/analysis/evidence.rs`, each exactly once.
 
 Before a production session enters the local index, its CWD must resolve to a

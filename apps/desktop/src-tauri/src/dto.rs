@@ -850,6 +850,8 @@ pub struct SessionQuotaPayload {
 #[serde(rename_all = "camelCase")]
 pub struct ChecksCategoryPayload {
     pub id: BurnCheckDetectorId,
+    /// True only for a published, sampled Ignored Instructions assessment.
+    pub sampled: bool,
     /// The current remediation state. `None` means the category has no complete assessment.
     pub lifecycle: Option<ChecksCategoryLifecyclePayload>,
     pub finding: u64,
@@ -2614,6 +2616,7 @@ impl ChecksReportPayload {
                 let counts = report.detectors[id.index()];
                 ChecksCategoryPayload {
                     id: id.into(),
+                    sampled: false,
                     lifecycle: None,
                     finding: counts.finding,
                     agents: if counts.finding > 0 {
@@ -3323,18 +3326,36 @@ mod tests {
                     "finding",
                     "id",
                     "lifecycle",
+                    "sampled",
                     "unavailable",
                 ]
             );
             assert_eq!(value["categories"][0]["finding"], 2);
             assert_eq!(value["categories"][0]["clean"], 1);
             assert_eq!(value["categories"][0]["unavailable"], 1);
+            assert_eq!(value["categories"][0]["sampled"], false);
 
             let value =
                 serde_json::to_value(ChecksReportPayload::from_report(&report, false, 4)).unwrap();
             assert_eq!(value["evidenceSettled"], false);
             assert_eq!(value["pendingEvidence"], 4);
             assert_eq!(value["estimatedTokenBurnBasisPoints"], 1_000);
+        }
+
+        #[test]
+        fn sampled_notice_serializes_only_for_the_ignored_instructions_category() {
+            let mut payload = ChecksReportPayload::from_report(&report(), true, 0);
+            payload.categories[DetectorId::IgnoredInstructions.index()].sampled = true;
+
+            let value = serde_json::to_value(payload).unwrap();
+            let categories = value["categories"].as_array().unwrap();
+            assert_eq!(categories.len(), DetectorId::COUNT);
+            for (index, category) in categories.iter().enumerate() {
+                assert_eq!(
+                    category["sampled"],
+                    index == DetectorId::IgnoredInstructions.index()
+                );
+            }
         }
 
         #[test]

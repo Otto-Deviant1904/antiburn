@@ -767,6 +767,10 @@ mod tests {
                     action_timestamp_ms: Some(100),
                     action_stable: true,
                 },
+                instruction_excerpt: "Test instruction.".to_owned(),
+                instruction_excerpt_truncated: false,
+                action_excerpt: "Test action.".to_owned(),
+                action_excerpt_truncated: false,
                 nearby_context_ids: vec![],
                 counterevidence_ids: vec![],
                 certainty: FindingCertainty::Possible,
@@ -785,6 +789,8 @@ mod tests {
                 skipped_rules: vec![],
                 skipped_actions: vec![],
                 processing_limit_reached: true,
+                sampled_pass: false,
+                selector_revision: 0,
                 limitations: vec!["assessment_processing_incomplete".to_owned()],
                 reassessed_comparison_ids: Vec::new(),
                 reassessed_rule_ids: Vec::new(),
@@ -849,7 +855,7 @@ mod tests {
                 [],
             )
             .unwrap();
-        assert_eq!(
+        assert!(
             ignored_instruction_result_for(
                 &connection,
                 &evidence,
@@ -864,10 +870,8 @@ mod tests {
                 },
             )
             .unwrap()
-            .unwrap()
-            .input_revision,
-            "revision",
-            "a new revision keeps the last findings visible while it runs"
+            .is_none(),
+            "a queued revision does not publish old findings as current"
         );
         connection
             .execute("UPDATE burn_check_assessment SET status = 'superseded'", [])
@@ -887,7 +891,7 @@ mod tests {
                 },
             )
             .unwrap()
-            .is_some()
+            .is_none()
         );
     }
 

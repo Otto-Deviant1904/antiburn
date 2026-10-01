@@ -10,6 +10,48 @@ use antiburn_local::analysis::{
 };
 use antiburn_local::insights::ReportWindow;
 
+#[test]
+fn ignored_instruction_evidence_uses_the_saved_instruction_and_action_excerpts() {
+    let cause = FindingCause::IgnoredInstructionConflict {
+        assessment_revision: "revision".to_owned(),
+        assessment_finding_id: "finding".to_owned(),
+        instruction_id: "instruction".to_owned(),
+        instruction_digest: "instruction-digest".to_owned(),
+        instruction_excerpt: "Run the focused tests before committing.".to_owned(),
+        instruction_excerpt_truncated: false,
+        rule_id: "rule".to_owned(),
+        rule_heading: "Quality Review".to_owned(),
+        start_line: 4,
+        end_line: 6,
+        source: "home:.config/opencode/AGENTS.md".to_owned(),
+        provenance:
+            antiburn_local::analysis::ignored_instructions::InstructionProvenance::RecordedInjection,
+        instruction_scope: antiburn_local::analysis::ignored_instructions::InstructionScope::Global,
+        action_id: "action".to_owned(),
+        action_digest: "action-digest".to_owned(),
+        action_excerpt: "git commit -m 'Update Jev prompts'".to_owned(),
+        action_excerpt_truncated: false,
+        action_timestamp_ms: Some(1_000),
+        nearby_context_ids: Vec::new(),
+        counterevidence_ids: Vec::new(),
+        certainty: antiburn_local::analysis::ignored_instructions::FindingCertainty::Likely,
+        limitations: Box::default(),
+    };
+
+    let saved = stored_instruction_evidence(&cause).unwrap();
+
+    assert_eq!(saved.status, BurnCheckEvidenceStatus::Available);
+    assert_eq!(saved.items.len(), 2);
+    assert_eq!(saved.items[0].label, BurnCheckEvidenceLabel::Instruction);
+    assert_eq!(
+        saved.items[0].excerpt,
+        "Run the focused tests before committing."
+    );
+    assert_eq!(saved.items[1].label, BurnCheckEvidenceLabel::ObservedAction);
+    assert_eq!(saved.items[1].excerpt, "git commit -m 'Update Jev prompts'");
+    assert_eq!(saved.items[1].observed_at_ms, Some(1_000));
+}
+
 const SOURCE_FORMATS: [SourceFormat; 32] = [
     SourceFormat::ClaudeJsonl,
     SourceFormat::CodexRolloutJsonl,

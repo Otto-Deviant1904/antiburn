@@ -122,6 +122,62 @@ fn unavailable_instruction_evidence() -> BurnCheckTargetEvidence {
     }
 }
 
+fn stored_instruction_evidence(cause: &FindingCause) -> Option<BurnCheckTargetEvidence> {
+    let FindingCause::IgnoredInstructionConflict {
+        instruction_excerpt,
+        instruction_excerpt_truncated,
+        source,
+        start_line,
+        end_line,
+        rule_heading,
+        action_id,
+        action_excerpt,
+        action_excerpt_truncated,
+        action_timestamp_ms,
+        ..
+    } = cause
+    else {
+        return None;
+    };
+    if instruction_excerpt.is_empty() || action_excerpt.is_empty() {
+        return None;
+    }
+    Some(BurnCheckTargetEvidence {
+        status: BurnCheckEvidenceStatus::Available,
+        items: vec![
+            BurnCheckEvidenceItem {
+                label: BurnCheckEvidenceLabel::Instruction,
+                source_label: source
+                    .strip_prefix("project:")
+                    .or_else(|| source.strip_prefix("home:"))
+                    .unwrap_or(source)
+                    .to_owned(),
+                reference: rule_heading.clone(),
+                observed_at_ms: None,
+                start_line: Some(*start_line),
+                end_line: Some(*end_line),
+                excerpt: bounded_evidence_excerpt(instruction_excerpt),
+                explanation: "Instruction text used for this comparison.".to_owned(),
+                limitation: instruction_excerpt_truncated
+                    .then(|| "The saved instruction excerpt is incomplete.".to_owned()),
+            },
+            BurnCheckEvidenceItem {
+                label: BurnCheckEvidenceLabel::ObservedAction,
+                source_label: "Session action".to_owned(),
+                reference: action_id.clone(),
+                observed_at_ms: *action_timestamp_ms,
+                start_line: None,
+                end_line: None,
+                excerpt: bounded_evidence_excerpt(action_excerpt),
+                explanation: "This is the action that Antiburn compared with the instruction."
+                    .to_owned(),
+                limitation: action_excerpt_truncated
+                    .then(|| "The saved action excerpt is incomplete.".to_owned()),
+            },
+        ],
+    })
+}
+
 fn bounded_evidence_excerpt(text: &str) -> String {
     let end = text
         .char_indices()
@@ -963,6 +1019,11 @@ impl RemediationController {
             }
             Err(error) => return Err(error),
         };
+        if target.finding().detector == DetectorId::IgnoredInstructions
+            && let Some(evidence) = stored_instruction_evidence(target.finding().cause())
+        {
+            return Ok(evidence);
+        }
         if let Err(error) = self.revalidate(&target) {
             return match error {
                 ControllerError::TargetNotFound

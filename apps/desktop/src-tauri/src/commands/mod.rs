@@ -1381,6 +1381,17 @@ pub async fn get_checks_report(
     crate::analytics::record_quota_incidents(app, &reduced.report.quota_pressure);
     crate::analytics::record_provider_incidents(app, &reduced.report.provider_incidents);
     let mut payload = ChecksReportPayload::from_reduced_report(&reduced);
+    if let Some(category) = payload
+        .categories
+        .iter_mut()
+        .find(|category| category.id == BurnCheckDetectorId::IgnoredInstructions)
+    {
+        category.sampled = crate::insights_report::has_published_sampled_instruction_assessment(
+            app.state::<Store>().state_dir(),
+            &request,
+        )
+        .map_err(fail)?;
+    }
     app.state::<RemediationController>()
         .apply_category_lifecycles(
             &app.state::<Store>(),
@@ -2905,6 +2916,7 @@ mod project_folder_tests {
     fn an_in_progress_instruction_check_stays_unassessed_until_evidence_is_available() {
         let mut category = crate::dto::ChecksCategoryPayload {
             id: BurnCheckDetectorId::IgnoredInstructions,
+            sampled: false,
             lifecycle: None,
             finding: 0,
             agents: Vec::new(),

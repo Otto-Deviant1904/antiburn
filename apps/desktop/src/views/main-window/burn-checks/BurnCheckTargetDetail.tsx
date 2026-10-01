@@ -50,33 +50,15 @@ function EvidenceExcerpt({ item }: { item: BurnCheckTargetEvidencePayload["items
     }
   }
   const compact = text.replace(/\s+/g, " ").trim()
-  const excerpt = compact.length > 180 ? `${compact.slice(0, 180)}…` : compact
-  const [expanded, setExpanded] = useState(false)
   return (
     <div className="space-y-1">
-      <p className="break-words rounded-control bg-surface-card px-3 py-2 type-callout text-label">
-        {excerpt}
+      <p className="type-caption text-label-tertiary">
+        {item.sourceLabel}
+        {item.explanation ? ` · ${item.explanation}` : ""}
       </p>
-      {text !== compact && (
-        <button
-          type="button"
-          className="burn-check-action type-footnote"
-          aria-expanded={expanded}
-          onClick={() => setExpanded((value) => !value)}
-        >
-          {expanded ? "Hide original formatting" : "Show original formatting"}
-        </button>
-      )}
-      {(expanded || compact.length > 180) && (
-        <details className="type-footnote text-label-secondary">
-          <summary className="cursor-pointer">View full bounded evidence</summary>
-          <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-control bg-surface-card p-3 type-callout text-label">
-            {expanded ? text : compact}
-          </pre>
-          {item.explanation && <p className="mt-1">{item.explanation}</p>}
-          <p className="mt-1 text-label-tertiary">Source: {item.sourceLabel}</p>
-        </details>
-      )}
+      <p className="break-words rounded-control bg-surface-card px-3 py-2 type-callout text-label">
+        {compact}
+      </p>
     </div>
   )
 }
@@ -89,6 +71,104 @@ function orderedEvidence(items: BurnCheckTargetEvidencePayload["items"]) {
       (a.label === "context" && b.label === "context"
         ? (a.observedAtMs ?? 0) - (b.observedAtMs ?? 0)
         : 0),
+  )
+}
+
+type EvidenceState = {
+  findingId: string
+  actionId: string
+  status: "loading" | "loaded" | "failed"
+  evidence?: BurnCheckTargetEvidencePayload
+}
+
+function IgnoredInstructionEvidence({
+  target,
+  state,
+  sourcePath,
+  retry,
+}: {
+  target: BurnCheckTargetPayload
+  state: EvidenceState
+  sourcePath: string | null
+  retry: () => void
+}) {
+  const items =
+    state.status === "loaded" && state.evidence?.status === "available"
+      ? state.evidence.items
+      : []
+  const instruction = items.find((item) => item.label === "instruction")
+  const action = items.find((item) => item.label === "observedAction")
+
+  return (
+    <div className="space-y-3">
+      <div className="space-y-1">
+        <p className="type-callout font-medium text-label">Instruction</p>
+        {instruction ? (
+          <>
+            <p className="type-caption text-label-tertiary">
+              {instruction.sourceLabel}
+              {instruction.startLine != null &&
+                ` · line${instruction.endLine !== instruction.startLine ? "s" : ""} ${instruction.startLine}${instruction.endLine !== instruction.startLine ? `–${instruction.endLine}` : ""}`}
+            </p>
+            <EvidenceExcerpt item={instruction} />
+          </>
+        ) : (
+          <p
+            role={state.status === "loading" ? "status" : undefined}
+            className="type-callout text-label-secondary"
+          >
+            {state.status === "loading"
+              ? "Loading the instruction…"
+              : (target.display.instructionTitle ??
+                sourcePath ??
+                "Instruction cited by this check")}
+          </p>
+        )}
+      </div>
+      <div className="space-y-1">
+        <p className="type-callout font-medium text-label">Where it was ignored</p>
+        {action ? (
+          <>
+            <EvidenceExcerpt item={action} />
+            {action.observedAtMs != null && (
+              <time
+                dateTime={new Date(action.observedAtMs).toISOString()}
+                className="type-caption text-label-tertiary"
+              >
+                {new Date(action.observedAtMs).toLocaleString()}
+              </time>
+            )}
+          </>
+        ) : (
+          <p
+            role={state.status === "loading" ? "status" : undefined}
+            className="type-callout text-label-secondary"
+          >
+            {state.status === "loading"
+              ? "Loading the cited session action…"
+              : target.finding.observation}
+          </p>
+        )}
+      </div>
+      {items.some((item) => item.limitation === outdatedInstructionsNote) && (
+        <p className="type-caption text-label-tertiary">{outdatedInstructionsNote}</p>
+      )}
+      {state.status === "failed" && (
+        <div>
+          <p role="alert" className="type-callout text-label-secondary">
+            Could not load the saved excerpts.
+          </p>
+          <button type="button" className="burn-check-action mt-2 type-callout" onClick={retry}>
+            Retry
+          </button>
+        </div>
+      )}
+      {state.status === "loaded" && state.evidence?.status === "unavailable" && (
+        <p role="status" className="type-callout text-label-tertiary">
+          The exact instruction and action text was not saved with this finding.
+        </p>
+      )}
+    </div>
   )
 }
 
@@ -116,12 +196,7 @@ export function BurnCheckTargetDetail({
   reportRow?: boolean
   openEvidence?: boolean
 }) {
-  const [evidenceState, setEvidenceState] = useState<{
-    findingId: string
-    actionId: string
-    status: "loading" | "loaded" | "failed"
-    evidence?: BurnCheckTargetEvidencePayload
-  } | null>(null)
+  const [evidenceState, setEvidenceState] = useState<EvidenceState | null>(null)
   const [showContext, setShowContext] = useState(false)
   const request = useRef(0)
   const currentTargetElement = useRef<HTMLElement | null>(null)
@@ -296,106 +371,147 @@ export function BurnCheckTargetDetail({
             )}
             {hasEvidenceSelection && (
               <div className="mt-3 space-y-3">
-                {evidenceState.status === "loading" && (
-                  <p role="status" className="type-callout text-label-secondary">
-                    Loading evidence…
-                  </p>
-                )}
-                {evidenceState.status === "failed" && (
-                  <div>
-                    <p role="alert" className="type-callout text-label-secondary">
-                      Could not load evidence.
-                    </p>
-                    <button
-                      type="button"
-                      className="burn-check-action mt-2 type-callout"
-                      onClick={() =>
-                        loadEvidence(target.actionId, target.findingId, target.finding.detector)
-                      }
-                    >
-                      Retry
-                    </button>
-                  </div>
-                )}
-                {evidenceState.status === "loaded" &&
-                  (evidenceState.evidence?.status === "unavailable" ? (
-                    <p role="status" className="type-callout text-label-secondary">
-                      This session or instruction file changed. These details are no longer
-                      available.
-                    </p>
-                  ) : (
-                    <div>
-                      <ol className="space-y-3">
-                        {orderedEvidence(evidenceState.evidence?.items ?? []).map(
-                          (item) =>
-                            (item.label !== "context" ||
-                              (!ignoredInstructions && showContext)) && (
-                              <li key={`${item.label}:${item.reference}`} className="space-y-1">
-                                <div className="flex min-w-0 items-baseline justify-between gap-3">
-                                  <p className="type-callout font-medium text-label">
-                                    {item.label === "observedAction"
-                                      ? ignoredInstructions
-                                        ? "What happened"
-                                        : "Session action"
-                                      : item.label === "context"
-                                        ? "Context"
-                                        : ignoredInstructions
-                                          ? item.startLine
-                                            ? `Instruction (from line${item.endLine !== item.startLine ? "s" : ""} ${item.startLine}${item.endLine !== item.startLine ? `–${item.endLine}` : ""})`
-                                            : "Instruction"
-                                          : `Instruction · ${item.sourceLabel}${item.startLine ? ` · line${item.endLine !== item.startLine ? "s" : ""} ${item.startLine}${item.endLine !== item.startLine ? `–${item.endLine}` : ""}` : ""}`}
-                                  </p>
-                                  {item.observedAtMs != null && (
-                                    <time
-                                      dateTime={new Date(item.observedAtMs).toISOString()}
-                                      className="shrink-0 type-caption text-label-tertiary"
-                                    >
-                                      {new Date(item.observedAtMs).toLocaleString()}
-                                    </time>
-                                  )}
-                                </div>
-                                {item.label === "instruction" &&
-                                item.excerpt === "Instruction text unavailable." ? (
-                                  <p className="type-callout text-label-secondary">
-                                    Unavailable or changed since this assessment.
-                                  </p>
-                                ) : (
-                                  <EvidenceExcerpt item={item} />
-                                )}
-                                {item.limitation &&
-                                  item.excerpt !== "Instruction text unavailable." &&
-                                  item.limitation !== outdatedInstructionsNote && (
-                                    <p className="type-callout text-label-secondary">
-                                      {item.limitation}
-                                    </p>
-                                  )}
-                              </li>
-                            ),
-                        )}
-                      </ol>
-                      {ignoredInstructions &&
-                        evidenceState.evidence?.items.some(
-                          (item) => item.limitation === outdatedInstructionsNote,
-                        ) && (
-                          <p className="mt-2 type-caption text-label-tertiary">
-                            {outdatedInstructionsNote}
+                {ignoredInstructions ? (
+                  <IgnoredInstructionEvidence
+                    target={target}
+                    state={evidenceState}
+                    sourcePath={sourcePath ?? null}
+                    retry={() =>
+                      loadEvidence(target.actionId, target.findingId, target.finding.detector)
+                    }
+                  />
+                ) : (
+                  <>
+                    {evidenceState.status === "loading" && (
+                      <p role="status" className="type-callout text-label-secondary">
+                        Loading evidence…
+                      </p>
+                    )}
+                    {evidenceState.status === "failed" && (
+                      <div>
+                        <p role="alert" className="type-callout text-label-secondary">
+                          Could not load evidence.
+                        </p>
+                        <button
+                          type="button"
+                          className="burn-check-action mt-2 type-callout"
+                          onClick={() =>
+                            loadEvidence(
+                              target.actionId,
+                              target.findingId,
+                              target.finding.detector,
+                            )
+                          }
+                        >
+                          Retry
+                        </button>
+                      </div>
+                    )}
+                    {evidenceState.status === "loaded" &&
+                      (evidenceState.evidence?.status === "unavailable" ? (
+                        ignoredInstructions ? (
+                          <div
+                            role="status"
+                            className="space-y-2 type-callout text-label-secondary"
+                          >
+                            <p>The check recorded this instruction and action summary:</p>
+                            <p>
+                              <span className="font-medium text-label">Instruction: </span>
+                              {target.display.instructionTitle ??
+                                sourcePath ??
+                                "Instruction in this finding"}
+                            </p>
+                            <p>
+                              <span className="font-medium text-label">Session action: </span>
+                              {target.finding.observation}
+                            </p>
+                            <p className="text-label-tertiary">
+                              The exact instruction and action text is no longer available.
+                            </p>
+                          </div>
+                        ) : (
+                          <p role="status" className="type-callout text-label-secondary">
+                            The original evidence is no longer available.
                           </p>
-                        )}
-                    </div>
-                  ))}
-                {!ignoredInstructions &&
-                  evidenceState.status === "loaded" &&
-                  evidenceState.evidence?.status === "available" &&
-                  evidenceState.evidence.items.some((item) => item.label === "context") && (
-                    <button
-                      type="button"
-                      className="burn-check-action type-callout"
-                      aria-expanded={showContext}
-                      onClick={() => setShowContext((visible) => !visible)}
-                    >
-                      {showContext ? "Hide context" : "Show context"}
-                    </button>
-                  )}
+                        )
+                      ) : (
+                        <div>
+                          <ol className="space-y-3">
+                            {orderedEvidence(evidenceState.evidence?.items ?? []).map(
+                              (item) =>
+                                (item.label !== "context" ||
+                                  (!ignoredInstructions && showContext)) && (
+                                  <li
+                                    key={`${item.label}:${item.reference}`}
+                                    className="space-y-1"
+                                  >
+                                    <div className="flex min-w-0 items-baseline justify-between gap-3">
+                                      <p className="type-callout font-medium text-label">
+                                        {item.label === "observedAction"
+                                          ? ignoredInstructions
+                                            ? "What happened"
+                                            : "Session action"
+                                          : item.label === "context"
+                                            ? "Context"
+                                            : ignoredInstructions
+                                              ? item.startLine
+                                                ? `Instruction (from line${item.endLine !== item.startLine ? "s" : ""} ${item.startLine}${item.endLine !== item.startLine ? `–${item.endLine}` : ""})`
+                                                : "Instruction"
+                                              : `Instruction · ${item.sourceLabel}${item.startLine ? ` · line${item.endLine !== item.startLine ? "s" : ""} ${item.startLine}${item.endLine !== item.startLine ? `–${item.endLine}` : ""}` : ""}`}
+                                      </p>
+                                      {item.observedAtMs != null && (
+                                        <time
+                                          dateTime={new Date(item.observedAtMs).toISOString()}
+                                          className="shrink-0 type-caption text-label-tertiary"
+                                        >
+                                          {new Date(item.observedAtMs).toLocaleString()}
+                                        </time>
+                                      )}
+                                    </div>
+                                    {item.label === "instruction" &&
+                                    item.excerpt === "Instruction text unavailable." ? (
+                                      <p className="type-callout text-label-secondary">
+                                        Unavailable or changed since this assessment.
+                                      </p>
+                                    ) : (
+                                      <EvidenceExcerpt item={item} />
+                                    )}
+                                    {item.limitation &&
+                                      item.excerpt !== "Instruction text unavailable." &&
+                                      item.limitation !== outdatedInstructionsNote && (
+                                        <p className="type-callout text-label-secondary">
+                                          {item.limitation}
+                                        </p>
+                                      )}
+                                  </li>
+                                ),
+                            )}
+                          </ol>
+                          {ignoredInstructions &&
+                            evidenceState.evidence?.items.some(
+                              (item) => item.limitation === outdatedInstructionsNote,
+                            ) && (
+                              <p className="mt-2 type-caption text-label-tertiary">
+                                {outdatedInstructionsNote}
+                              </p>
+                            )}
+                        </div>
+                      ))}
+                    {!ignoredInstructions &&
+                      evidenceState.status === "loaded" &&
+                      evidenceState.evidence?.status === "available" &&
+                      evidenceState.evidence.items.some((item) => item.label === "context") && (
+                        <button
+                          type="button"
+                          className="burn-check-action type-callout"
+                          aria-expanded={showContext}
+                          onClick={() => setShowContext((visible) => !visible)}
+                        >
+                          {showContext ? "Hide context" : "Show context"}
+                        </button>
+                      )}
+                  </>
+                )}
               </div>
             )}
           </section>

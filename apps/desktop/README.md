@@ -12,9 +12,10 @@ the device and needs no antiburn account, server, or backend. Jev-powered Burn
 Checks currently include Ignored Instructions. When enabled with your
 TypeSafe API key in Settings → Checks, that check sends selected instruction
 text, assistant text excerpts, Bash command input, file-edit paths, read-file
-paths, search queries with scope filters, and other-tool input to TypeSafe. It
-excludes user messages,
-edit contents, read/search/command output, and other tool results. Bash command
+paths, search queries with scope filters, and other-tool input to TypeSafe.
+OpenCode `apply_patch` requests expose paths from valid `patchText` input. The
+check excludes user messages, edit contents, read/search/command output, and
+other tool results. Bash command
 input can contain inline scripts, heredocs, and patches recorded inside the
 command; dedicated edit-tool content stays excluded. Selected paths can leave
 the device in TypeSafe requests. Usage charges can apply. The app downloads public model prices from
@@ -141,12 +142,23 @@ and IPC. The Rust analytics module tests consent, endpoint injection, and the
 payload schema. `cargo-deny` rejects known telemetry dependencies in the local
 engine. Release and dependency checks run through the required CI gate.
 
-Ignored Instructions uses a separate TypeSafe request, not the analytics
-channel. Its assessment compares selected session evidence with supported
-instruction files as they exist now. That current-file comparison does not
-establish historical file contents or activation. A read path alone does not
-provide historical instruction text. Missing historical evidence remains
-unavailable, and an incomplete source cannot prove the absence of a conflict.
+Ignored Instructions uses separate paid TypeSafe requests, not the analytics
+channel. It samples up to 256 high-priority rule/action pairs per review.
+Meaningful word overlap, tool names, literal paths, risk, and recency help rank
+pairs; rule and source diversity and low-overlap probes keep the sample from
+depending only on matching words. New activity leads the next review, followed
+by older pairs not yet sampled. The remaining sampling gap decreases over
+reviews without new work; an append can increase it. Compatible typed answers
+persist across appends, completed reviews, and restarts when their source
+bindings and input still match. A changed instruction file applies only to
+later actions. The first file observation and a read path cannot prove what
+instructions governed older actions; historical evidence remains unavailable
+without an authoritative snapshot. Clean means no finding among sampled
+comparisons, not that all content is safe. Evidence gaps and provider errors
+have separate outcomes and do not count as Clean. About 60 seconds after worker
+start for an ordinary session is a goal, not a guarantee. Each pass may use
+several paid requests; 256 pairs is not a cost cap. A dispatched request with
+an unknown outcome is held from automatic repeat billing.
 The source and finding limits are in
 [`session-coverage.md`](../../docs/session-coverage.md) and
 [`check-coverage.md`](../../docs/check-coverage.md). The

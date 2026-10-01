@@ -20,7 +20,8 @@ excerpts, Bash command input, file-edit paths, read-file paths, search queries
 with scope filters, and other-tool inputs to TypeSafe to assess whether
 instructions were followed. Bash input is the recorded command request, so
 inline scripts, heredocs, and patches included in that command can be sent too.
-Dedicated edit-tool content is excluded. The check excludes user messages, read
+Dedicated edit-tool content is excluded; valid OpenCode `apply_patch`
+`patchText` can expose edit paths. The check excludes user messages, read
 output, search output, command output, and all other tool-result text. Current
 global and project instruction snapshots are comparison inputs, not proof of
 what was active during an older session. Selected paths stay on your computer
@@ -37,12 +38,33 @@ checks send the same selected instruction text and session fields and can
 incur TypeSafe usage charges. Remove the key in Settings → Checks to stop new
 assessments. Past requests cannot be withdrawn from TypeSafe.
 
-The worker compares supported instruction files as they exist now. A matching
-current path does not prove that the file had the same text, or was active, when
-the session action occurred. Historical instruction text remains unavailable
+Antiburn keeps local assessment progress and compatible answers so a restart or
+session append can reuse completed work. A changed action, instruction snapshot,
+selection, question, or model can require new paid work. A timeout or cancelled
+request after dispatch can have an unknown billing outcome; Antiburn blocks
+automatic repeat dispatch for that unresolved work but cannot determine whether
+TypeSafe billed it. For a finding, Antiburn also keeps bounded excerpts of the
+instruction and action used for that comparison so the example remains visible
+if the session changes. These excerpts stay local and are removed with the
+session or local assessment data. Request bounds and usage reservations limit
+local admission, not the total cost of a long session or repeated revisions. Settings shows
+estimated usage, not a spending cap or provider invoice.
+
+The worker compares supported instruction files as they exist now. Changes to
+these files govern future agent actions; an explicit history run can also
+compare older actions to today's rules without claiming they applied then. A
+matching current path does not prove that the file had the same text, or was
+active, when the session action occurred. Historical instruction text remains
+unavailable
 unless a supported authoritative session record contains it; a read-file path
-alone is not that record. Missing historical evidence remains unavailable and
-cannot support a clean result.
+alone is not that record. A Clean label means no finding in the selected
+review, not that every action was checked or that historical instruction
+activation was proven. Priority selection may leave lower-priority work
+unchecked. Missing historical evidence cannot prove what governed an older
+action. New session actions can be reviewed after an append while compatible
+earlier judgments are reused; this can cause additional paid requests. About
+60 seconds after worker start for an ordinary assessment is a goal, not a
+guarantee.
 
 Antiburn keeps bounded local totals for confirmed TypeSafe token usage, calls,
 cache reuse, and unknown request outcomes. The totals include the model and price

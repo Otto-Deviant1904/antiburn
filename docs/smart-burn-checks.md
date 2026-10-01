@@ -1,7 +1,7 @@
 # Smart Burn Checks
 
 Smart Burn Checks are like deterministic Burn Checks: both look for signs of
-known issues in coding sessions. Smart Burn Checks send small, selected parts
+known issues in coding sessions. Smart Burn Checks send selected parts
 of a session to Jev for an assessment. Antiburn then combines those assessments
 with its local rules. The result describes evidence of an issue; it does not
 judge a person's intent.
@@ -29,8 +29,10 @@ The check selects:
 
 - Instruction text from supported files in their current state. This is a
   current-file comparison, not proof of the text or activation the agent saw
-  during the session. Historical text is available only from a supported,
-  authoritative session record; a read path alone does not provide it.
+  during the session. An explicit 7- or 30-day history run compares older
+  actions with these current files as a best-effort review. Historical text
+  is available only from a supported, authoritative session record; a read
+  path alone does not provide it.
 - Assistant text that describes work.
 - Bash command input, which can include inline scripts, heredocs, and patches
   recorded inside the command.
@@ -44,19 +46,23 @@ stays excluded even though inline Bash content is selected. Selected file paths
 can appear in TypeSafe requests. Event IDs, line numbers, and citation links
 stay on the computer. Jev gets temporary labels; Antiburn uses a private map to
 connect its answers to the original session events. Missing historical evidence
-stays unavailable and cannot support a clean result. A recorded command request
+stays unavailable and cannot prove historical activation, even if a selected
+review shows Clean. A recorded command request
 does not establish that the command ran or succeeded.
 
-The selected query filters content kinds and tool categories before loading
-text and applies page limits to selected fields. Source-wide truncation flags
-can still keep a result unassessed when they cannot identify the omitted field.
+The selected query excludes thinking and non-authoritative message text before
+loading rows. It selects normalized tool fields by the check's field mask and
+applies byte limits to selected values. It can still read metadata for excluded
+tool categories. Source-wide truncation flags can keep a result unassessed when
+they cannot identify the omitted field.
 
 ### How instructions are split
 
 The Markdown reader uses headings and main list items to find rules. It keeps a
 rule's nested bullets, conditions, exceptions, and examples with that rule. It
-also saves the YAML header with the instruction file. A change to the file then
-creates a new saved version.
+also saves the YAML header with the instruction file. A changed current file
+produces a different comparison snapshot; it does not change which instructions
+governed older actions.
 
 Background and example sections do not become rule targets. The check does not
 classify a rule by searching for words such as “must” or “never.” Jev judges the
@@ -65,14 +71,18 @@ meaning from the supplied text.
 Long text cannot fit in one request. The check cuts long rules, assistant
 messages, and tool inputs into small, overlapping text ranges. Each range
 repeats a little text from the range before it. This keeps words near a cut
-connected. Antiburn can check every range without making one oversized request.
+connected. Sampling can leave ranges and range combinations unchecked.
 
-Instruction source also matters. The worker currently discovers supported
-instruction files from the session's worktree and home and labels those snapshots
-as current-file comparisons. A matching path does not prove historical content
-or activation. Recorded historical injection is a distinct provenance, but the
-worker does not recover it from session fields. The reducer preserves
-provenance, and current-file-only evidence cannot support a clean result.
+Instruction source also matters. The worker discovers supported instruction
+files from the session's worktree and home. It records an observed version and
+the session source positions at that observation. A new or changed version
+applies to later actions, not to actions already recorded. The first observation
+cannot establish when that version became active. A matching path or read
+request does not prove historical content or activation. A history review can
+compare past actions with current rules, but does not claim those rules were
+active then or mark that comparison as historical proof.
+The rule reference retains its source, digest, scope, conditions, and local
+file location so a finding points to the instruction it used.
 
 ### How sessions are split
 
@@ -86,12 +96,41 @@ content. The first page can have newer events than the second page. The reader
 keeps the original order of events and keeps separate conversation branches
 apart.
 
-Within a page, the check moves through actions and rules in a stable order. It
-makes an **event window** from one action and up to two rules to compare with
-it. This sends the action once for those rules instead of copying it into a
-separate window each time. One rule/action comparison is a **target**. Long
-actions or rules can need several windows, with a small overlap so no text is
-skipped.
+### How sampling works
+
+One rule-text range and one action-text range form a possible comparison. The
+default sampling budget is **256 high-priority rule/action pairs per review**.
+It bounds comparisons in a pass, not TypeSafe requests, tokens, elapsed time,
+or lifetime cost. A large session can have many more possible pairs. The check
+records possible, sampled, and remaining pair counts. Remaining pairs are a
+sampling gap, not known violations.
+
+The local selector scores meaningful word overlap; words found in fewer actions
+carry more weight. A tool name or literal action path mentioned by a rule adds
+a stronger signal. Prohibitions paired with tool input and recent actions add
+smaller signals. These signals rank work; they do not prove that any other pair
+is irrelevant. The selector spreads early choices across rules and instruction
+sources and includes low-overlap probes when space permits. It fills the rest
+of the budget in stable score order. Diversity and exploration reduce, but do
+not remove, the chance of missing a conflict. Jev still decides applicability
+using the rule and recorded context. Keyword matches alone never publish findings.
+
+On subsequent reviews, new activity receives attention first, then older
+eligible pairs not yet sampled. The worker saves sampled pair identities and
+compatible typed answers across completed reviews, appends, and restarts.
+Unchanged sampled pairs do not consume the next pass because content pages or
+request packing changed. With no new work, the remaining gap decreases over
+successive reviews; new actions or rules can increase it. Reuse requires stable
+source-bound rule and action identities and the same selected text, relevant
+context, instruction version, model, and check revisions. A matching path or
+similar wording alone is insufficient. An uncertain dispatched request stays
+blocked from automatic repeat billing.
+
+An **event window** contains one action and up to two sampled rules. This sends
+the action once for those rules instead of copying it into a separate window
+each time. One rule/action comparison is a **target**. Long actions or rules
+can need several windows with overlapping text. Sampling does not promise
+every possible range or window is sent.
 
 For example, the instructions might say “Run tests before publishing” and “Get
 approval before publishing.” If the session says “Published the release,” the
@@ -105,7 +144,7 @@ again. Completed comparisons do not carry forward. The carried comparison state
 is separate from the content cursor and page result. Missing history never proves
 that a prerequisite did not happen. User approval text is excluded and cannot
 resolve a permission-dependent conclusion. If the needed interval remains
-missing or cut short, the result stays unassessed.
+missing or cut short, that comparison stays unassessed.
 
 ### What Jev receives and returns
 
@@ -115,8 +154,9 @@ applicability question for each target:
 
 1. Does this instruction apply to the action?
 
-The check asks independent relationship and evidence questions after each valid
-applicability answer, including “not applicable” and uncertain answers:
+The check skips follow-up questions for a confident “not applicable” answer
+(at least 0.90 probability). For other valid applicability answers, it asks
+relationship and evidence questions, plus a completion question when relevant:
 
 1. Does the action conflict with or follow the instruction after conditions and
    exceptions are considered?
@@ -124,25 +164,22 @@ applicability answer, including “not applicable” and uncertain answers:
 3. Does the instruction have a completion-bound obligation whose completion
    boundary is not shown?
 
-A “not applicable” answer does not prove the action is clean. The independent
-answers must confirm that the candidate is unrelated and that the selected
-evidence is sufficient, each with at least 0.85 probability. Contradictory, weak,
-or incomplete answers stay unassessed. Confident rule classification can settle
-an action or prerequisite obligation without another completion question.
+Weak or uncertain answers do not prove a clean comparison. Source completeness
+and unresolved obligations limit conclusions about the reviewed comparisons.
 
 The shared request code combines windows until the request reaches its size or
 question limit. Jev returns a choice and probability for each answer. The
 temporary labels let the shared worker connect answers to their windows, while
 the private map connects those windows back to the original rule and event.
-The independent follow-up also checks excluded-field limits and keeps context
-violations separate from the candidate's local citation. The first pass still
-evaluates every selected target.
+The follow-up also checks excluded-field limits and keeps context
+violations separate from the candidate's local citation. The first pass evaluates
+chosen targets, not every possible rule/action pair.
 
 ### How results become findings
 
 Jev does not decide the session result by itself. Antiburn checks the answers
-available for each target, then combines those decisions from all windows and
-pages into one session result.
+available for each selected target, then combines those decisions into one
+review result.
 
 The local decision rules apply confidence limits. A possible finding needs at
 least 0.85 probability that the rule applies and the action conflicts. A likely
@@ -156,14 +193,23 @@ unassessed.
 Antiburn links each finding to the exact local rule and action. It combines
 duplicate results for the same rule and action into one finding. A typed
 completion answer can keep a rule pending until the session shows the task's
-completion point. A clean result requires all eligible targets and pages to be
-covered, with no pending or unassessed work. Partial pages cannot produce a
-clean result.
+completion point. A completed sampled review with no findings can show the
+ordinary **Clean** label. Clean means **no finding among sampled comparisons**.
+It does not mean that all session content is safe or that every instruction
+was active at the time. Unsampled pairs remain a coverage gap. Missing
+prerequisites, excluded approvals, incomplete source evidence, pending
+obligations, and unresolved sampled comparisons cannot prove those comparisons
+clean. A provider or response error means the review did not finish; an
+evidence error means required source material is unavailable. Neither is a
+clean sampled review.
 
-The shared worker saves progress after each request. If Antiburn stops, it can
-resume without sending completed requests again. The worker also handles the
-TypeSafe connection, cached answers, usage reservations, retries, response
-checks, and cancellation. Check text and answers do not go to product analytics.
+The shared worker saves progress after each request and stores compatible
+typed answers separately from current findings. It rebuilds findings against
+the current source publication before reusing answers. A changed instruction
+file governs future actions; old actions do not get reassessed against the new
+file merely because it changed. The worker also handles the TypeSafe connection,
+cached responses, usage reservations, retries, response checks, and cancellation.
+Check text and answers do not go to product analytics.
 
 ## Reusable Jev check contract
 
@@ -202,9 +248,9 @@ reduction live beside its assessment under `checks/ignored_instructions/`.
 
 Each check declares a `JevInputSelection` and matching
 `JevEvidenceRequirements`. The default selection is empty. The source boundary
-applies selection before a check receives evidence. Its page query filters by
-content kind and tool category before loading text. The page contains only
-fields permitted by the selection.
+applies selection before a check receives evidence. Its page query excludes
+thinking and non-authoritative message text, selects normalized tool fields by
+mask, and retains row metadata. The check receives only permitted text fields.
 
 `JevFieldAvailability` reports `excluded`, `unsupported`, `not_observed`, or
 `observed` for each field, plus source capability and observed, empty, malformed,
@@ -299,19 +345,30 @@ owns how requests run and how progress resumes.
 ## Evaluation scope
 
 The synthetic Ignored Instructions evaluation inputs and Rust harness are under
-`apps/desktop/src-tauri/eval/ignored_instructions/`. The development and
-regression case data, exact binding sidecars, and gate definitions are under its
-`data/` directory. Offline characterization and harness tests check bounded
-behavior; they do not establish live Jev accuracy. Complete development and
-fresh independent confirmation at a frozen implementation are still required
-before claiming the planned live acceptance gates passed.
-The first-version gates require 80% joint outcome-and-exact-binding accuracy,
-80% observable binding recall, 80% published binding precision, and complete
-scheduled results with exact labels. That is at least 128/159 joint passes for
-the development schedule and 39/48 for independent confirmation. The latest
-complete development run (`questions37`) reported 133/159 joint passes, 43/52
-observable bindings recalled, and 43/46 published bindings correct. These
-development counts meet the numeric gates; they are not independent acceptance.
+`apps/desktop/src-tauri/eval/ignored_instructions/`. Development and regression
+cases, exact binding sidecars, and the current live-evaluation policy live under
+its `data/` directory. Offline characterization and harness tests check bounded
+behavior; they do not establish live Jev accuracy. Live tests are ignored by
+default and can incur TypeSafe charges when explicitly run.
+
+An ordinary assessment in about 60 seconds after worker start is a performance
+goal, not a deadline or guarantee. Preparation, provider admission, request
+packing, model latency, follow-up questions, checkpoints, and publication all
+add time. A pass can use several paid requests; the 256-pair budget does not
+cap spending. Large inputs, rate limits, retries, and missing history can take
+longer. Measure worker-start-to-result time, sampled coverage, requests and
+tokens, reuse, missed findings, and cost on representative sessions before
+making a performance or quality claim. Offline synthetic tests cannot establish
+live model accuracy or elapsed provider time.
+
+TypeSafe's [API reference](https://docs.typesafe.ai/api) describes typed
+questions and answers. Its [model page](https://docs.typesafe.ai/models)
+documents token and request limits and notes that limits can change. Its
+[re-ranking example](https://docs.typesafe.ai/cookbooks/rerank_typesafe)
+shortlists before semantic scoring; a shortlist can miss the correct result.
+Its [large-state guidance](https://docs.typesafe.ai/model-jaggedness/jev-1.13)
+describes model limits as state grows. These sources motivate bounded requests
+and a measured shortlist. They do not validate Ignored Instructions accuracy.
 
 ## Ignored Instructions selected-input coverage
 
@@ -373,10 +430,11 @@ no accepted Ignored Instructions characterization.
 | `DevinLocalSqlite`             | U           | U                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
 | `Uncharacterized`              | U           | U                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
 
-The query filters content kinds and tool categories before it reads text. It
-applies part and byte limits to selected fields. SQLite extracts only selected
-normalized fields. Each tool request is normalized once when its source adapter
-writes the fenced content row. Raw request content remains local; selected
+The query excludes thinking and non-authoritative message text before loading
+rows. It applies part and byte limits to selected fields. SQLite extracts only
+selected normalized tool fields but can read excluded row metadata. Each tool
+request is normalized once when its source adapter writes the fenced content
+row. Raw request content remains local; selected
 paths, commands, queries, or enabled edit content form the assessment input.
 Schema migration 63 adds normalized fields. Parser revision 45 refreshes older
 rows for operation metadata, native field bindings, recorded path context, and
@@ -407,8 +465,10 @@ strings. This is recorded request evidence, not proof of successful execution.
 Search input keeps string or string-array query, pattern, glob, include/exclude,
 path, and CWD fields, plus recorded boolean constraints. It excludes matches and
 arbitrary nested objects. Read paths and edit paths are separate from outputs
-and edit bodies. Patch paths include both `Update File` and `Move to` paths;
-content-only selection removes those path headers and retains line prefixes.
+and edit bodies. Patch input accepts a recorded `patchText` string, including
+OpenCode `apply_patch` arguments. Patch paths include both `Update File` and
+`Move to` paths; content-only selection removes those path headers and retains
+line prefixes. Empty or malformed patch input supplies no invented path.
 Multi-file edits retain every accepted path. Paths remain literal transcript
 evidence. The normalizer does not resolve relative paths, platform syntax, or
 globs against files on disk.
@@ -537,28 +597,31 @@ item independently and builds the final request once per batch. The final
 request must pass both the 60 KiB request limit and the 30 KiB state-plus-longest-
 question limit. These are byte proxies, not measured provider token counts.
 
-The desktop shares eight HTTP slots and a 512 KiB in-flight byte allowance.
+The desktop shares sixteen HTTP slots and a 4 MiB in-flight byte allowance.
 Each call reserves twice its request and local-binding bytes plus the 64 KiB
 response maximum.
 The runner also caps a request wave at a 16 MiB queued-byte allowance shared
 across runners. These limits account for serialized payloads and response
 buffers; they are not a bound on every allocator or check-owned preparation
-object. Provider starts are at least 100 ms apart across checks. Retry-After
+object. Provider starts are at least 25 ms apart across checks. Retry-After
 and bounded exponential backoff delay the shared start time. A rolling one-
-second allowance admits at most 98,304 reserved input tokens. Each dispatched
+second allowance admits at most 100,000 reserved input tokens. Each dispatched
 call starts with a 65,536-token reservation. Confirmed input-token usage replaces
 that reservation within the window; known rejection releases it. Unknown
 outcomes keep the reservation until the window expires. This is shared across
 checks. No live throughput claim follows from these local limits.
+Each session's compact progress checkpoint is limited to 2 MiB.
 
 Production HTTP uses a cancellable async request. Cancellation cannot undo a
 request that the provider already accepted. A timeout, cancellation after
 dispatch, or unusable response can leave the billing outcome unknown. The
 store keeps hashed work-item identities and a reservation ID for that outcome
 and blocks another dispatch of the same semantic work for that session
-incarnation and check, including after append or repacking. It does not automatically retry an unknown
-outcome. At 1,024 unresolved identities it stops new dispatch rather than evict
-an identity and risk repeat billing. Clear Local Data removes this state.
+incarnation and check, including after append or repacking. The worker retries
+unknown outcomes a bounded number of times; unresolved identities then block a
+repeat dispatch of the same semantic work. At 1,024 unresolved identities it
+stops new dispatch rather than evict an identity and risk repeat billing. Clear
+Local Data removes this state.
 
 At startup, recovery records any dispatched reservation without a final usage
 settlement as one unknown outcome. It preserves unresolved identities and their
@@ -575,8 +638,10 @@ older bounded cache. Cache writes, confirmed usage settlement, and unresolved-
 identity removal share one transaction. Exact lookup reads one response rather
 than decoding every cached response. Cache retention is seven days, at most
 128 rows and 512 KiB of payload and identity bytes. The rolling usage ledger
-retains at most 4,096 reservations; reaching that limit stops new reservations
-until entries expire. Usage summaries remain bounded aggregates.
+retains at most 4,096 unsettled or unknown reservations. Confirmed usage moves
+to bounded aggregates, and its settled reservation detail is pruned before the
+next request is admitted. A full ledger of unresolved reservations stops new
+dispatch rather than dropping billing safeguards.
 
 Migration 65 adds source-order and recent-order content indexes. Production
 selected-content reads use bounded keyset pages. A cursor stores a revision, a

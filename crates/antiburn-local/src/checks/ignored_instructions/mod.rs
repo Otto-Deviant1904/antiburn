@@ -11,7 +11,8 @@ mod planning;
 mod questions;
 
 pub use planning::{
-    build_assessment_plan, build_jev_context, extend_comparison_with_history,
+    SamplingLedger, build_assessment_plan, build_assessment_plan_with_sampling, build_jev_context,
+    build_jev_context_with_sampling, extend_comparison_with_history,
     extend_jev_context_with_history,
 };
 
@@ -33,8 +34,9 @@ pub use assessment::{
     ASSESSMENT_QUESTION_REVISION, ASSESSMENT_REDUCER_REVISION, AssessmentCoverage,
     AssessmentFinding, AssessmentInput, AssessmentPlan, AssessmentResult, CandidateComparison,
     ComparisonJudgment, CompletionCoverage, CounterEvidence, FindingCertainty, INPUT_SELECTION,
-    IgnoredInstructionsCheck, InstructionSourceCoverage, MAX_ASSESSMENT_CANDIDATES, PendingRule,
-    RuleActionRef, RuleStatus, evaluator_revision, reduce_assessment,
+    IgnoredInstructionsCheck, InstructionSourceCoverage, MAX_ASSESSMENT_CANDIDATES,
+    MAX_SAMPLED_COMPARISONS_PER_PASS, PendingRule, RuleActionRef, RuleStatus, evaluator_revision,
+    reduce_assessment,
 };
 pub use discovery::{
     InstructionAdapter, InstructionDiscovery, MAX_INSTRUCTION_FILES, MAX_INSTRUCTION_TOTAL_BYTES,
