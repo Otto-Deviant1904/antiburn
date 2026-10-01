@@ -510,6 +510,16 @@ fn finding_order(left: &AssessmentFinding, right: &AssessmentFinding) -> std::cm
         .then_with(|| left.nearby_context_ids.cmp(&right.nearby_context_ids))
         .then_with(|| left.counterevidence_ids.cmp(&right.counterevidence_ids))
         .then_with(|| left.limitations.cmp(&right.limitations))
+        .then_with(|| left.action_excerpt.cmp(&right.action_excerpt))
+        .then_with(|| left.instruction_excerpt.cmp(&right.instruction_excerpt))
+        .then_with(|| {
+            left.action_excerpt_truncated
+                .cmp(&right.action_excerpt_truncated)
+        })
+        .then_with(|| {
+            left.instruction_excerpt_truncated
+                .cmp(&right.instruction_excerpt_truncated)
+        })
 }
 
 fn judgment(

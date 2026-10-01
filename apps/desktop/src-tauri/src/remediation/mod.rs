@@ -123,23 +123,10 @@ fn unavailable_instruction_evidence() -> BurnCheckTargetEvidence {
 }
 
 fn stored_instruction_evidence(cause: &FindingCause) -> Option<BurnCheckTargetEvidence> {
-    let FindingCause::IgnoredInstructionConflict {
-        instruction_excerpt,
-        instruction_excerpt_truncated,
-        source,
-        start_line,
-        end_line,
-        rule_heading,
-        action_id,
-        action_excerpt,
-        action_excerpt_truncated,
-        action_timestamp_ms,
-        ..
-    } = cause
-    else {
+    let FindingCause::IgnoredInstructionConflict(evidence) = cause else {
         return None;
     };
-    if instruction_excerpt.is_empty() || action_excerpt.is_empty() {
+    if evidence.instruction_excerpt.is_empty() || evidence.action_excerpt.is_empty() {
         return None;
     }
     Some(BurnCheckTargetEvidence {
@@ -147,31 +134,34 @@ fn stored_instruction_evidence(cause: &FindingCause) -> Option<BurnCheckTargetEv
         items: vec![
             BurnCheckEvidenceItem {
                 label: BurnCheckEvidenceLabel::Instruction,
-                source_label: source
+                source_label: evidence
+                    .source
                     .strip_prefix("project:")
-                    .or_else(|| source.strip_prefix("home:"))
-                    .unwrap_or(source)
+                    .or_else(|| evidence.source.strip_prefix("home:"))
+                    .unwrap_or(&evidence.source)
                     .to_owned(),
-                reference: rule_heading.clone(),
+                reference: evidence.rule_heading.clone(),
                 observed_at_ms: None,
-                start_line: Some(*start_line),
-                end_line: Some(*end_line),
-                excerpt: bounded_evidence_excerpt(instruction_excerpt),
+                start_line: Some(evidence.start_line),
+                end_line: Some(evidence.end_line),
+                excerpt: bounded_evidence_excerpt(&evidence.instruction_excerpt),
                 explanation: "Instruction text used for this comparison.".to_owned(),
-                limitation: instruction_excerpt_truncated
+                limitation: evidence
+                    .instruction_excerpt_truncated
                     .then(|| "The saved instruction excerpt is incomplete.".to_owned()),
             },
             BurnCheckEvidenceItem {
                 label: BurnCheckEvidenceLabel::ObservedAction,
                 source_label: "Session action".to_owned(),
-                reference: action_id.clone(),
-                observed_at_ms: *action_timestamp_ms,
+                reference: evidence.action_id.clone(),
+                observed_at_ms: evidence.action_timestamp_ms,
                 start_line: None,
                 end_line: None,
-                excerpt: bounded_evidence_excerpt(action_excerpt),
+                excerpt: bounded_evidence_excerpt(&evidence.action_excerpt),
                 explanation: "This is the action that Antiburn compared with the instruction."
                     .to_owned(),
-                limitation: action_excerpt_truncated
+                limitation: evidence
+                    .action_excerpt_truncated
                     .then(|| "The saved action excerpt is incomplete.".to_owned()),
             },
         ],
@@ -661,8 +651,8 @@ impl RemediationController {
             let display_facts = burn_check_display_facts(&target, None);
             let instruction_project = matches!(
                 target.findings[0].finding.cause(),
-                FindingCause::IgnoredInstructionConflict { source, .. }
-                    if source.starts_with("project:")
+                FindingCause::IgnoredInstructionConflict(evidence)
+                    if evidence.source.starts_with("project:")
             );
             let has_project_path = target.scope_kind == "project" || instruction_project;
             let watch = store
@@ -1038,7 +1028,12 @@ impl RemediationController {
         let Some(current) = target.findings.first() else {
             return Ok(unavailable_instruction_evidence());
         };
-        let antiburn_local::remediation::FindingCause::IgnoredInstructionConflict {
+        let antiburn_local::remediation::FindingCause::IgnoredInstructionConflict(evidence) =
+            current.finding.cause()
+        else {
+            return Ok(unavailable_instruction_evidence());
+        };
+        let antiburn_local::remediation::IgnoredInstructionConflictEvidence {
             assessment_revision,
             instruction_id,
             instruction_digest,
@@ -1057,10 +1052,7 @@ impl RemediationController {
             certainty,
             limitations,
             ..
-        } = current.finding.cause()
-        else {
-            return Ok(unavailable_instruction_evidence());
-        };
+        } = evidence.as_ref();
 
         let key = SessionKey::new(
             current.environment_key.as_str(),

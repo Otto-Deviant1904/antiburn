@@ -4,25 +4,20 @@ use std::time::Instant;
 
 pub(crate) use antiburn_local::analysis::SourceFormat;
 pub(crate) use antiburn_local::analysis::jev::{
-    JevAnswer, JevCheck, JevCheckPlan, JevCheckRevisions, JevError, JevEvidenceRequirements,
-    JevInputSelection, JevQuestion, JevRequestBatch, JevResponse, JevRunProgress,
-    JevSessionContext, JevUsage, JevWorkItem, JevWorkItemResult, MAX_RESPONSE_BYTES, PINNED_MODEL,
-    pack_work_items, run_jev_check, validate_jev_response,
+    JevAnswer, JevCheck, JevError, JevInputSelection, JevQuestion, JevRequestBatch, JevResponse,
+    JevRunProgress, JevUsage, JevWorkItemResult, MAX_RESPONSE_BYTES, PINNED_MODEL, pack_work_items,
+    run_jev_check, validate_jev_response,
 };
 pub(crate) use antiburn_local::checks::ignored_instructions::{
-    AssessmentInput, AssessmentPlan, AssessmentResult, ContentAction, ContentEventReference,
+    AssessmentInput, AssessmentResult, ContentAction, ContentEventReference,
     IgnoredInstructionsCheck, InstructionProvenance, InstructionScope, SessionContentEvidence,
     build_jev_context, select_session_content, snapshot_from_text,
 };
 pub(crate) use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-#[path = "contract.rs"]
-mod contract;
 #[path = "support/mod.rs"]
 pub(crate) mod evaluation_support;
-#[path = "focused.rs"]
-mod focused;
 #[path = "heldout.rs"]
 mod heldout;
 #[path = "independent_confirmation.rs"]
@@ -1053,15 +1048,6 @@ fn finding_bindings_integrity(result: &AssessmentResult, input: &AssessmentInput
     })
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum Strategy {
-    Cascade,
-    OnePass,
-    Hybrid,
-}
-
-struct StrategyCheck(Strategy);
-
 fn create_run_capture(path: &std::path::Path, manifest: &Value) -> std::io::Result<()> {
     let bytes = serde_json::to_vec_pretty(manifest)?;
     let mut file = std::fs::OpenOptions::new()
@@ -1080,115 +1066,6 @@ fn write_run_capture(path: &std::path::Path, capture: &Value) -> std::io::Result
         .open(path)?;
     std::io::Write::write_all(&mut file, &bytes)?;
     file.sync_all()
-}
-
-fn applicable_answers(item: &JevWorkItem) -> JevWorkItemResult {
-    JevWorkItemResult {
-        request_id: "question-construction-only".to_owned(),
-        work_item_id: item.id.clone(),
-        answers: item
-            .questions
-            .keys()
-            .map(|key| {
-                (
-                    key.clone(),
-                    JevAnswer::Choice {
-                        choice: "applies".to_owned(),
-                        probabilities: [("applies".to_owned(), 1.0)].into_iter().collect(),
-                        confidence: 1.0,
-                    },
-                )
-            })
-            .collect(),
-        evidence: item.window.evidence.clone(),
-        model: PINNED_MODEL.to_owned(),
-        usage: JevUsage {
-            input_tokens: 0,
-            output_tokens: 0,
-        },
-    }
-}
-
-impl JevCheck for StrategyCheck {
-    type Prepared = AssessmentPlan;
-    type Result = AssessmentResult;
-    fn id(&self) -> &'static str {
-        IgnoredInstructionsCheck.id()
-    }
-    fn revisions(&self) -> JevCheckRevisions {
-        IgnoredInstructionsCheck.revisions()
-    }
-    fn input_selection(&self) -> JevInputSelection {
-        IgnoredInstructionsCheck.input_selection()
-    }
-    fn evidence_requirements(&self) -> JevEvidenceRequirements {
-        IgnoredInstructionsCheck.evidence_requirements()
-    }
-    fn supports_incremental_reuse(&self) -> bool {
-        IgnoredInstructionsCheck.supports_incremental_reuse()
-    }
-    fn classifications(&self, context: &JevSessionContext) -> Result<Vec<JevWorkItem>, JevError> {
-        IgnoredInstructionsCheck.classifications(context)
-    }
-    fn apply_classifications(
-        &self,
-        plan: &mut JevCheckPlan<AssessmentPlan>,
-        results: &BTreeMap<String, JevWorkItemResult>,
-        context: &JevSessionContext,
-    ) -> Result<(), JevError> {
-        IgnoredInstructionsCheck.apply_classifications(plan, results, context)?;
-        add_speculative_questions(self.0, plan, context)
-    }
-    fn prepare(
-        &self,
-        context: &JevSessionContext,
-    ) -> Result<JevCheckPlan<AssessmentPlan>, JevError> {
-        let mut plan = IgnoredInstructionsCheck.prepare(context)?;
-        add_speculative_questions(self.0, &mut plan, context)?;
-        Ok(plan)
-    }
-    fn reconcile(
-        &self,
-        item: &JevWorkItem,
-        result: &JevWorkItemResult,
-        context: &JevSessionContext,
-    ) -> Result<Option<JevWorkItem>, JevError> {
-        if item
-            .questions
-            .keys()
-            .any(|key| key.ends_with("::relationship"))
-        {
-            Ok(None)
-        } else {
-            IgnoredInstructionsCheck.reconcile(item, result, context)
-        }
-    }
-    fn reduce(
-        &self,
-        plan: &JevCheckPlan<AssessmentPlan>,
-        results: &[JevWorkItemResult],
-        complete: bool,
-    ) -> Result<AssessmentResult, JevError> {
-        IgnoredInstructionsCheck.reduce(plan, results, complete)
-    }
-}
-
-fn add_speculative_questions(
-    strategy: Strategy,
-    plan: &mut JevCheckPlan<AssessmentPlan>,
-    context: &JevSessionContext,
-) -> Result<(), JevError> {
-    for item in &mut plan.work_items {
-        let speculative = matches!(strategy, Strategy::OnePass)
-            || (matches!(strategy, Strategy::Hybrid) && item.questions.len() == 1);
-        if speculative
-            && let Some(followup) =
-                IgnoredInstructionsCheck.reconcile(item, &applicable_answers(item), context)?
-        {
-            item.questions.extend(followup.questions);
-        }
-    }
-    Ok(())
 }
 
 fn outcome(result: &AssessmentResult, complete: bool) -> &'static str {
@@ -1534,8 +1411,49 @@ async fn production_runner_resume_and_provider_failure_contracts() {
                 | "response_too_large"
                 | "partial_failure"
         ) {
+            let injected_calls = calls.load(std::sync::atomic::Ordering::Relaxed);
             assert!(!initial.complete);
-            assert!(initial.failure.is_some());
+            assert!(
+                injected_calls > 0,
+                "{} ({operation}): error injection did not run",
+                case.id
+            );
+            assert!(
+                !initial.progress.failed_item_ids.is_empty(),
+                "{} ({operation}): failed item IDs were not recorded",
+                case.id
+            );
+            let terminal_failure = matches!(
+                operation,
+                "missing_answer"
+                    | "decode_failure"
+                    | "wrong_type"
+                    | "invalid_probability"
+                    | "invalid_sum"
+                    | "extra_answer"
+                    | "model_mismatch"
+                    | "cancelled"
+                    | "auth_rejected"
+                    | "response_too_large"
+            );
+            assert_eq!(
+                initial.failure.is_some(),
+                terminal_failure,
+                "{} ({operation}): unexpected terminal failure",
+                case.id
+            );
+            if operation == "partial_failure" {
+                assert!(
+                    injected_calls > 1,
+                    "{} ({operation}): expected multiple dispatches",
+                    case.id
+                );
+                assert!(
+                    !initial.progress.results.is_empty(),
+                    "{} ({operation}): completed work was not retained",
+                    case.id
+                );
+            }
             assert_ne!(outcome(&initial.result, initial.complete), "no_finding");
             rows.push(json!({"id":case.id,"operation":operation,"status":"passed","failure":initial.failure.map(|error|error.to_string())}));
             continue;
@@ -1700,7 +1618,7 @@ fn assert_production_payload_isolated(case: &Case, batch: &JevRequestBatch) {
 pub(crate) async fn validate_confirmation_payload_isolation(case: &Case) -> BTreeSet<String> {
     let input = input(case);
     let context = build_jev_context(&input).expect("confirmation input builds context");
-    let check = StrategyCheck(Strategy::Cascade);
+    let check = IgnoredInstructionsCheck;
     let phases = Mutex::new(BTreeSet::new());
     run_jev_check(
         &check,
@@ -1750,14 +1668,13 @@ async fn all_development_and_regression_requests_keep_labels_out_of_each_phase()
 
 pub(crate) async fn live_case(
     case: &Case,
-    strategy: Strategy,
     client: &jev_client::TypeSafeClient,
     usage: &Arc<Mutex<RunUsage>>,
 ) -> Value {
     let started = Instant::now();
     let input = input(case);
     let context = build_jev_context(&input).expect("live evaluation input builds context");
-    let check = StrategyCheck(strategy);
+    let check = IgnoredInstructionsCheck;
     let plan = check
         .prepare(&context)
         .expect("live evaluation context prepares check");
@@ -1835,7 +1752,7 @@ pub(crate) async fn live_case(
                 })
                 .collect::<BTreeSet<_>>();
             let observed = outcome(&result, execution.complete);
-            json!({"id":case.id,"family":case.family,"source_format":case.format,"strategy":format!("{strategy:?}"),
+            json!({"id":case.id,"family":case.family,"source_format":case.format,
                 "expected":case.expected,"observed":observed,"correct":observed == case.expected && execution.failure.is_none(),
                 "preclassification_candidate_citations":candidates,"candidate_citations":executed_candidates,"expected_citations":expected_citations,"observed_citations":observed_citations,"observed_bindings":observed_bindings,
                 "candidate_recall_hit":if citation_labeled { json!(expected_citations.is_subset(&executed_candidates)) } else { Value::Null },
@@ -1851,7 +1768,7 @@ pub(crate) async fn live_case(
                 "response_reference":format!("row:{}",case.id),"revisions":check.revisions(),"result":result,"answers":execution.progress.results})
         }
         Err(error) => {
-            json!({"id":case.id,"family":case.family,"source_format":case.format,"strategy":format!("{strategy:?}"),
+            json!({"id":case.id,"family":case.family,"source_format":case.format,
             "expected":case.expected,"expected_citations":expected_citations,"observed":"unassessed","observed_bindings":[],"correct":false,"failure":error.to_string(),"requests":usage.lock().expect("live usage mutex is not poisoned").requests - before_calls,
             "response_reference":format!("row:{}",case.id),"revisions":check.revisions()})
         }
@@ -1996,6 +1913,39 @@ fn heldout_provider_entry_preflight_accepts_resolved_development_and_regression_
             .filter(|case| !case.fixture["operation"].is_string()),
     );
     live_preflight(&selected).unwrap();
+}
+
+#[test]
+fn regression_scorer_keeps_the_full_scheduled_cohort_and_exact_binding_denominators() {
+    let regression = cases()
+        .into_iter()
+        .filter(|case| !case.fixture["operation"].is_string())
+        .collect::<Vec<_>>();
+    assert_eq!(regression.len(), 40);
+    assert_eq!(
+        regression
+            .iter()
+            .map(|case| case.id.as_str())
+            .collect::<BTreeSet<_>>()
+            .len(),
+        40
+    );
+    live_preflight(&regression).expect("regression exact labels pass production preflight");
+
+    let inventory = scoring_inventory(&regression);
+    let expected_observable_bindings = inventory
+        .iter()
+        .filter(|case| case["expected"] == "finding" && case["label_review"].is_null())
+        .map(|case| case["expected_bindings"].as_array().unwrap().len())
+        .sum::<usize>();
+    let score = evaluation_support::scoring::score_v2(&inventory, &[]);
+    assert_eq!(score["scheduled_cases"], 40);
+    assert_eq!(
+        score["observable_expected_bindings"],
+        expected_observable_bindings
+    );
+    assert_eq!(score["complete"], false);
+    assert_eq!(score["joint_passes"], 0);
 }
 
 #[test]
@@ -2243,54 +2193,59 @@ fn counterfactual_projection_changes_only_selected_evidence() {
 }
 
 #[tokio::test]
-async fn strategy_adapters_preserve_production_reduction_and_citations() {
-    let case = development_cases().remove(0);
-    let context = build_jev_context(&input(&case)).unwrap();
-    let mut results = Vec::new();
-    for strategy in [Strategy::Cascade, Strategy::OnePass, Strategy::Hybrid] {
+async fn focused_compliant_and_violating_cases_use_the_shared_runner_and_exact_scorer() {
+    let focused_ids = BTreeSet::from([
+        "dev-react-report",
+        "dev-react-removal",
+        "dev-rust-add",
+        "dev-rust-quote",
+    ]);
+    let focused = development_cases()
+        .into_iter()
+        .filter(|case| focused_ids.contains(case.id.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(focused.len(), focused_ids.len());
+    live_preflight(&focused).expect("focused development labels have exact production bindings");
+
+    let mut rows = Vec::new();
+    for case in &focused {
+        let input = input(case);
+        let context = build_jev_context(&input).expect("focused input builds production context");
         let execution = run_jev_check(
-            &StrategyCheck(strategy),
+            &IgnoredInstructionsCheck,
             &context,
             JevRunProgress::default(),
-            |batch| async move { Ok(mock_response(&batch, true)) },
+            |batch| async move { Ok(mock_response(&batch, case.expected == "finding")) },
             |_| Ok(()),
         )
         .await
-        .unwrap();
-        assert!(execution.complete);
-        results.push(execution.result.findings);
+        .expect("offline focused run uses the shared production runner");
+        let observed_bindings = execution
+            .result
+            .findings
+            .iter()
+            .map(|finding| {
+                format!(
+                    "{}/{}",
+                    finding.reference.rule_id, finding.reference.action_id
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        rows.push(json!({
+            "id": case.id,
+            "observed": outcome(&execution.result, execution.complete),
+            "observed_bindings": observed_bindings,
+            "citation_binding_integrity": finding_bindings_integrity(&execution.result, &input),
+            "failure": execution.failure.map(|error| error.to_string()),
+        }));
     }
-    assert_eq!(results[0], results[1]);
-    assert_eq!(results[0], results[2]);
-}
 
-fn screening_diagnostics(rows: &[Value]) -> Value {
-    json!([0.80,0.85,0.90,0.95].map(|cutoff| {
-        let mut observed = 0;
-        let mut forwarded = 0;
-        let mut positive_cases = 0;
-        let mut positive_forwarded = 0;
-        for row in rows.iter().filter(|row| row["strategy"] == "Cascade") {
-            let positive = row["expected"] == "finding";
-            positive_cases += usize::from(positive);
-            let mut positive_pass = false;
-            for result in row["answers"].as_object().into_iter().flat_map(|results| results.values()) {
-                let expected_candidate = result["evidence"].as_array().into_iter().flatten().any(|reference|reference["role"] == "candidate"
-                    && row["expected_citations"].as_array().into_iter().flatten().any(|id|id == &reference["source_id"]));
-                for (key,answer) in result["answers"].as_object().into_iter().flat_map(|answers| answers.iter()) {
-                    if !key.ends_with("::applicability") { continue; }
-                    observed += 1;
-                    let pass = answer["choice"] == "applies" && answer["probabilities"]["applies"].as_f64().unwrap_or(0.0) >= cutoff;
-                    forwarded += usize::from(pass);
-                    positive_pass |= positive && expected_candidate && pass;
-                }
-            }
-            positive_forwarded += usize::from(positive_pass);
-        }
-        json!({"screen_cutoff":cutoff,"measured_targets":observed,"forwarded":forwarded,
-            "positive_cases":positive_cases,"positive_cases_forwarded":positive_forwarded,"positive_case_screen_recall":ratio(positive_forwarded,positive_cases),
-            "limit":"development screening diagnosis only; not end-to-end recalibration or Noul conversion"})
-    }))
+    let score = evaluation_support::scoring::score_v2(&scoring_inventory(&focused), &rows);
+    assert_eq!(score["scheduled_cases"], 4);
+    assert_eq!(score["complete"], true);
+    assert_eq!(score["cases_missing_exact_binding_labels"], 0);
+    assert_eq!(score["joint_passes"], 4, "{score}");
+    assert!(evaluation_support::scoring::passes_v2(&score), "{score}");
 }
 
 #[tokio::test]
@@ -2338,14 +2293,12 @@ async fn live_frozen_heldout_production_path() {
     let usage = Arc::new(Mutex::new(RunUsage::default()));
     let mut development_rows = Vec::new();
     for case in &development {
-        for strategy in [Strategy::Cascade, Strategy::OnePass, Strategy::Hybrid] {
-            development_rows.push(live_case(case, strategy, &client, &usage).await);
-            write_run_capture(
-                &capture,
-                &json!({"manifest":manifest,"phase":"development","rows":development_rows}),
-            )
-            .expect("persist development progress");
-        }
+        development_rows.push(live_case(case, &client, &usage).await);
+        write_run_capture(
+            &capture,
+            &json!({"manifest":manifest,"phase":"development","rows":development_rows}),
+        )
+        .expect("persist development progress");
     }
     let mut robustness_rows = Vec::new();
     for case in development.iter().take(4) {
@@ -2354,7 +2307,7 @@ async fn live_frozen_heldout_production_path() {
         changed.fixture["prefix_bytes"] = json!(2048);
         changed.fixture["prefix_text"] = json!("Unrelated context. 日本語。\r\n");
         changed.instruction = format!("{}\r\n", case.instruction);
-        robustness_rows.push(live_case(&changed, Strategy::Cascade, &client, &usage).await);
+        robustness_rows.push(live_case(&changed, &client, &usage).await);
         write_run_capture(
             &capture,
             &json!({"manifest":manifest,"phase":"robustness","rows":robustness_rows}),
@@ -2363,7 +2316,7 @@ async fn live_frozen_heldout_production_path() {
     }
     let mut rows = Vec::new();
     for case in &regression {
-        let row = live_case(case, Strategy::Cascade, &client, &usage).await;
+        let row = live_case(case, &client, &usage).await;
         eprintln!(
             "heldout {} expected={} observed={} requests={}",
             case.id, case.expected, row["observed"], row["requests"]
@@ -2376,14 +2329,16 @@ async fn live_frozen_heldout_production_path() {
         .expect("persist regression progress");
     }
     let totals = usage.lock().unwrap();
+    let regression_quality =
+        evaluation_support::scoring::score_v2(&scoring_inventory(&regression), &rows);
     let report = json!({"model":PINNED_MODEL,"gates":serde_json::from_str::<Value>(GATES).unwrap(),
         "scope":"normalized selected-input production path; lifecycle/provider rows run offline; no target preselection; no tuning",
         "expected_semantic_rows":40,"executed_semantic_rows":rows.len(),"offline_contract_rows":8,
         "requests":totals.requests,
         "input_tokens":totals.input_tokens,"output_tokens":totals.output_tokens,"estimated_cost_usd":totals.input_tokens as f64*0.042/1_000_000.0,
-        "metrics":metrics(&rows.iter().collect::<Vec<_>>()),"by_family":grouped_metrics(&rows,"family"),
-        "by_source":grouped_metrics(&rows,"source_format"),"development_by_strategy":grouped_metrics(&development_rows,"strategy"),
-        "screening_diagnostics":screening_diagnostics(&development_rows),"development_rows":development_rows,
+        "metrics":metrics(&rows.iter().collect::<Vec<_>>()),"quality_v2":regression_quality,
+        "by_family":grouped_metrics(&rows,"family"),
+        "by_source":grouped_metrics(&rows,"source_format"),"development_rows":development_rows,
         "robustness_rows":robustness_rows,"calls":totals.calls,"rows":rows,"manifest":manifest});
     write_run_capture(&capture, &report).expect("persist completed heldout capture");
     assert_eq!(
@@ -2396,6 +2351,11 @@ async fn live_frozen_heldout_production_path() {
     );
     assert_eq!(report["metrics"]["candidate_recall"], 1.0);
     assert_eq!(report["metrics"]["citation_accuracy"], 1.0);
+    assert!(
+        evaluation_support::scoring::passes_v2(&report["quality_v2"]),
+        "exact-binding regression gates failed; keep labels and report: {}",
+        report["quality_v2"]
+    );
 }
 
 #[tokio::test]
@@ -2450,7 +2410,7 @@ async fn live_development_quality_diagnostics() {
     };
     let mut rows = Vec::new();
     for case in &selected {
-        let mut row = live_case(case, Strategy::Cascade, &client, &usage).await;
+        let mut row = live_case(case, &client, &usage).await;
         let original = input(case);
         let result = if row["result"].is_null() {
             assert!(

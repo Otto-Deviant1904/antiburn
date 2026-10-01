@@ -937,7 +937,7 @@ mod tests {
         );
         assert!(
             store
-                .burn_check_request_is_unresolved("work-identity")
+                .burn_check_requests_are_unresolved(&["work-identity".to_owned()])
                 .unwrap()
         );
         assert_eq!(notifications.load(Ordering::SeqCst), 2);
@@ -950,7 +950,7 @@ mod tests {
         });
         assert!(
             !store
-                .burn_check_request_is_unresolved("work-identity")
+                .burn_check_requests_are_unresolved(&["work-identity".to_owned()])
                 .unwrap()
         );
         assert_eq!(

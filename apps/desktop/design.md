@@ -712,8 +712,9 @@ Notes for what isn't expressible as a token:
   leave an 8px gap without a divider or top inset.
   In the main report, show actual failures first. Keep awaiting, passed, and
   snoozed checks in their own groups. Show all active checks without a lifecycle
-  in a neutral `Not assessed (N)` disclosure only when N is at least one. Start
-  it collapsed; search opens and focuses its target. Collapsing a focused row
+  in a neutral `Not assessed (N)` disclosure only when N is at least one. Keep
+  these rows hidden by default; the disclosure makes them reachable when needed.
+  Start it collapsed; search opens and focuses its target. Collapsing a focused row
   returns focus to the disclosure. Never describe an unassessed row as failed.
   When Ignored Instructions reports priority sampling, place a small tertiary
   information icon next to its detail title. Its shared tooltip explains that
@@ -1178,8 +1179,9 @@ gutter separates the collection from the sidebar. Both surfaces use the same che
 counts, order, token-burn percentages, summaries, and semantic status colors. This parity comes from
 shared presentation helpers. Do not copy labels or calculate percentages in either surface. Do not
 sum category percentages. Use color only for the compact status icon and metric. Other text and
-surfaces stay neutral. The main view shows failed and passed groups. It hides not-assessed rows;
-settled historical coverage gaps use a not-assessed count, not a processing state. Category rows use
+surfaces stay neutral. The main view shows failed and passed groups. It hides not-assessed rows
+by default; show a `Not assessed (N)` disclosure when those rows need to be reachable.
+Settled historical coverage gaps use a not-assessed count, not a processing state. Category rows use
 separate `session-card` rounded controls and accessible selection buttons. The selected detail uses one short, check-specific
 finding sentence below the heading. The prompt action sits at the heading’s right edge. Do not show internal target identities,
 repeated observations, repeated guidance, or detail refresh and bounded-list notices. Unused MCP servers, skills, and built-in tools show

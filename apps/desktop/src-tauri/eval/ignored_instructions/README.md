@@ -2,18 +2,23 @@
 
 This directory owns the desktop crate's synthetic evaluation runner, support code,
 and active development and regression JSON data. The independent confirmation
-wrapper is part of the same Cargo target. Its sealed fixture stays at its existing
-path and is not part of the development or regression inputs.
+wrapper and its native projection tests are part of the same Cargo target. Its
+sealed fixture stays at its existing path and is not part of the development or
+regression inputs.
 
 Every case has one semantic outcome label. `bindings.json` keeps exact production
 rule/action IDs separate from semantic source references. A finding with
 `resolution: "pending"` is not ready for live execution. Empty bindings are
 explicit and valid only for a reviewed non-finding, pending, or unassessed label.
 
-The development, focused, regression, and sealed confirmation cohorts have
-separate purposes. Keep their labels and exact binding sidecars with each
-cohort; changes to production binding revisions require an offline review of
-the bindings before a live run.
+The development, regression, and sealed confirmation cohorts have separate
+purposes. Focused-labelled cases are part of the development cohort and its
+scheduled denominator. Keep their labels and exact binding sidecars with each
+cohort; changes to production binding revisions require an offline review of the
+bindings before a live run. The obsolete direct-provider focused diagnostics are
+removed. Focused checks use the shared runner and scorer with the authored
+development labels. The paid `OnePass` and `Hybrid` comparison is also removed;
+development, regression, and confirmation runs use the production check path.
 
 The live evaluation policy in `data/gates.json` requires at least
 80% joint outcome-and-exact-binding accuracy, 80% observable binding recall,

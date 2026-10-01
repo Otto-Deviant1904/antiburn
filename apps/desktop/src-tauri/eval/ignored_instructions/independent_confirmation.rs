@@ -1,5 +1,4 @@
 use super::*;
-use sha2::Digest;
 
 #[path = "independent_confirmation/native.rs"]
 mod native;
@@ -130,26 +129,6 @@ fn independent_confirmation_frozen_labels_and_native_projection() {
     assert!(formats.values().all(|count| *count == 8));
 }
 
-#[tokio::test]
-#[ignore = "billable independent confirmation; run once after final prompt freeze"]
-async fn independent_confirmation_live_after_prompt_freeze() {
-    run_confirmation_capture("jev-independent-confirmation-results.json", "Independent selected-input semantic confirmation; native selected-input equivalence validated offline. Shared production runner/client. No target preselection.").await;
-}
-
-#[tokio::test]
-#[ignore = "billable post-fix regression of previously observed frozen confirmation; not new independent acceptance"]
-async fn frozen_confirmation_post_fix_regression() {
-    run_confirmation_capture("jev-confirmation-post-fix-c18-q29-r19.json", "Post-fix regression of the previously observed frozen 48-case confirmation. Original labels and first capture preserved. This is not a new independent result. Native projection validated offline; production runner/client.").await;
-}
-
-async fn run_confirmation_capture(name: &str, scope: &str) {
-    let fixture_sha256 = sha2::Sha256::digest(CONFIRMATION.as_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    run_confirmation_capture_for_cases(name, scope, independent_cases(), fixture_sha256).await;
-}
-
 async fn run_confirmation_capture_for_cases(
     name: &str,
     scope: &str,
@@ -179,7 +158,7 @@ async fn run_confirmation_capture_for_cases(
     let usage = Arc::new(Mutex::new(RunUsage::default()));
     let mut rows = Vec::new();
     for case in &cases {
-        let mut row = live_case(case, Strategy::Cascade, &client, &usage).await;
+        let mut row = live_case(case, &client, &usage).await;
         row["correct"] = json!(row["correct"] == true && row["citation_correct"] == true);
         rows.push(row);
         let report = json!({

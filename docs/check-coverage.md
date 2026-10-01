@@ -136,7 +136,8 @@ in this matrix.
 The first-tier product matrix is the source of truth for reachable check
 support. Its six supported formats are `ClaudeJsonl`, `CodexRolloutJsonl`,
 `OpenCodeSqliteV2`, `PiV3Jsonl`, `CursorCliAgentJsonl`, and
-`AntigravityBrainJsonl`. Other formats are unavailable for this check. Clean
+`AntigravityBrainJsonl`. `OpenCodeJsonl` and all other formats are unavailable
+for this check. Clean
 means no finding among sampled comparisons in a completed review, not that all
 session content is safe. Unsampled pairs remain a coverage gap. Observed
 current-file versions govern future actions; the first observation cannot

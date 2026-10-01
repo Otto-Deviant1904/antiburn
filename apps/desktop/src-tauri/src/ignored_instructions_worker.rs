@@ -809,7 +809,9 @@ async fn run_candidate(
         processing_limit_reached = plan.coverage.processing_limit_reached,
         candidate_elapsed_ms = candidate_started.elapsed().as_millis(),
     );
+    let serialization_started = Instant::now();
     let serialized = serde_json::to_string(&result)?;
+    let serialization_elapsed_ms = serialization_started.elapsed().as_millis();
     let progress_json = serialize_selected_cursor_progress(
         &cursor,
         &cursor.progress,
@@ -841,16 +843,20 @@ async fn run_candidate(
         save_outcome(
             app,
             store,
-            &input,
-            JevExecutionOutcome {
-                result,
-                progress: cursor.progress,
-                complete: outcome.complete,
-                failure: outcome.failure,
+            SaveOutcome {
+                input: &input,
+                outcome: JevExecutionOutcome {
+                    result,
+                    progress: cursor.progress,
+                    complete: outcome.complete,
+                    failure: outcome.failure,
+                },
+                serialized: &serialized,
+                serialization_elapsed_ms,
+                progress_json: &progress_json,
+                historical: candidate.historical,
+                sampled_pairs: &sampled_pairs,
             },
-            &progress_json,
-            candidate.historical,
-            &sampled_pairs,
         )
         .await?;
         return Ok(());
@@ -1789,15 +1795,30 @@ async fn discover_instructions_at(
     .await
 }
 
+struct SaveOutcome<'a> {
+    input: &'a BurnCheckInput,
+    outcome: JevExecutionOutcome<ignored_instructions::AssessmentResult>,
+    serialized: &'a str,
+    serialization_elapsed_ms: u128,
+    progress_json: &'a str,
+    historical: bool,
+    sampled_pairs: &'a [BurnCheckSampledPair],
+}
+
 async fn save_outcome(
     app: &tauri::AppHandle,
     store: &Store,
-    input: &BurnCheckInput,
-    outcome: JevExecutionOutcome<ignored_instructions::AssessmentResult>,
-    progress_json: &str,
-    historical: bool,
-    sampled_pairs: &[BurnCheckSampledPair],
+    save: SaveOutcome<'_>,
 ) -> anyhow::Result<()> {
+    let SaveOutcome {
+        input,
+        outcome,
+        serialized,
+        serialization_elapsed_ms,
+        progress_json,
+        historical,
+        sampled_pairs,
+    } = save;
     let failed = outcome.failure.is_some();
     ::tracing::debug!(
         event = "ignored_instruction_assessment_finished",
@@ -1815,9 +1836,6 @@ async fn save_outcome(
     );
     #[cfg(not(feature = "analytics"))]
     let _ = (historical, failed);
-    let serialization_started = Instant::now();
-    let serialized = serde_json::to_string(&outcome.result)?;
-    let serialization_elapsed_ms = serialization_started.elapsed().as_millis();
     let store_started = Instant::now();
     let published = if let Some(error) = outcome.failure {
         let retry_at = match error {
@@ -1840,7 +1858,7 @@ async fn save_outcome(
             input,
             &BurnCheckFailure {
                 error_category: error_category(&error),
-                result_json: &serialized,
+                result_json: serialized,
                 progress_json,
                 retry_at_epoch: retry_at,
             },
@@ -1848,7 +1866,7 @@ async fn save_outcome(
             IDLE_SECS,
         )?
     } else {
-        store.complete_burn_check_assessment(input, &serialized, unix_now(), IDLE_SECS)?
+        store.complete_burn_check_assessment(input, serialized, unix_now(), IDLE_SECS)?
     };
     let store_elapsed_ms = store_started.elapsed().as_millis();
     let event_started = Instant::now();

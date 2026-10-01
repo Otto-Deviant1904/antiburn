@@ -352,13 +352,11 @@ fn prompt_facts(
         FindingCause::CacheChurn { model, .. } => {
             facts.push(PromptFactRole::CurrentModel, model, true)?;
         }
-        FindingCause::IgnoredInstructionConflict {
-            source,
-            start_line,
-            end_line,
-            rule_heading,
-            ..
-        } => {
+        FindingCause::IgnoredInstructionConflict(evidence) => {
+            let source = &evidence.source;
+            let start_line = evidence.start_line;
+            let end_line = evidence.end_line;
+            let rule_heading = &evidence.rule_heading;
             facts.push(
                 PromptFactRole::InstructionLocation,
                 &format!(
@@ -463,13 +461,10 @@ pub(super) fn prompt_parts(cause: &FindingCause) -> (String, &'static str, &'sta
             "Diagnose bounded input and cache behavior without claiming a cause from token totals alone.",
             "Require comparable ordered requests on the same reviewed route before claiming improvement.",
         ),
-        FindingCause::IgnoredInstructionConflict {
-            start_line,
-            end_line,
-            ..
-        } => (
+        FindingCause::IgnoredInstructionConflict(evidence) => (
             format!(
-                "The cited action conflicts with the instruction on lines {start_line}-{end_line}."
+                "The cited action conflicts with the instruction on lines {}-{}.",
+                evidence.start_line, evidence.end_line
             ),
             "Follow the cited instruction and correct the affected work.",
             "Review the corrected work against the cited instruction.",
@@ -624,8 +619,8 @@ fn coverage_limitation(
     cause: &FindingCause,
 ) -> &'static str {
     let detector = cause.detector();
-    if let FindingCause::IgnoredInstructionConflict { provenance, .. } = cause {
-        return match provenance {
+    if let FindingCause::IgnoredInstructionConflict(evidence) = cause {
+        return match evidence.provenance {
             crate::checks::ignored_instructions::InstructionProvenance::CurrentFileComparison => {
                 "This check uses the instruction file as it looks now. We do not know if it had the same text when the action happened."
             }

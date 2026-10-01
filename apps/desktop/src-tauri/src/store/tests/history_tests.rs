@@ -621,7 +621,20 @@ fn recent_history_waits_for_active_sessions_and_survives_worker_pages() {
     );
     for candidate in &first {
         assert!(candidate.historical);
-        store.skip_historical_burn_check(candidate).unwrap();
+        store
+            .lock()
+            .execute(
+                "UPDATE burn_check_assessment SET status = 'superseded'
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+                AND check_id = 'ignored_instructions' AND boundary_generation = -2
+                AND status = 'idle'",
+                rusqlite::params![
+                    candidate.session.key.environment_key,
+                    candidate.session.key.agent,
+                    candidate.session.key.session_id
+                ],
+            )
+            .unwrap();
     }
     let second = store
         .burn_check_candidates("ignored_instructions", NOW + 180, 180, 16)

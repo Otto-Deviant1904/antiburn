@@ -26,26 +26,30 @@ Dedicated edit-tool content is excluded. The check excludes user messages,
 read output, search output, command output, and all other tool-result text.
 Selected paths can leave the machine in TypeSafe requests. Keep this paid,
 optional request separate from first-party product analytics. Do not send its
-inputs, responses, keys, findings, or evidence to analytics. Store only bounded local TypeSafe
-usage aggregates, including the model and price version used for estimates; do
-not retain request histories or session identifiers for billing summaries. Session deletion keeps these
-already-incurred totals. Clear Local Data removes them and the rolling usage
-reservations.
+inputs, responses, keys, findings, or evidence to analytics. Store only bounded
+local TypeSafe usage aggregates, including the model and price version used for
+estimates. Do not retain request histories or session identifiers for billing summaries.
+Session deletion keeps already-incurred totals. Clear Local Data removes them
+and the rolling usage reservations.
 
 Instruction-file discovery compares supported files in their current state.
 It does not prove historical contents or activation. Recover historical
 instruction text only from an authoritative session record; do not infer it
 from a matching current path or a read request. Keep unavailable evidence
-unavailable. Ignored Instructions samples up to 256 high-priority rule/action
-pairs per review. Clean means no finding among sampled comparisons, not that
-all content is safe. Keep provider and evidence errors separate from the
-remaining sampling gap. Preserve source-bound rule and action identity across
-append and restart: review new activity first, then older pairs not yet
+unavailable. Ignored Instructions samples 256 high-priority rule/action pairs
+per review by default. This sample is not exhaustive or a spending cap. Clean
+means no finding among sampled comparisons, not that all content is safe. Keep
+provider and evidence errors separate from the remaining sampling gap. Reuse a
+result only when the same instruction rule and action can be identified across
+an append or restart. Review new activity first, then older pairs not yet
 sampled. Instruction changes govern future actions only; the first observed
 version cannot establish historical activation. The roughly 60-second
-ordinary-session goal after worker start is not a cutoff or guarantee. Describe
-incremental paid requests, compatible answer reuse, and unresolved-dispatch
-protection without promising a per-session cost cap.
+ordinary-session goal after worker start is not a cutoff or guarantee. An
+unknown outcome can trigger up to three total dispatch attempts while the worker
+tries to recover it. An earlier attempt may already have incurred a charge. If
+the result remains unknown, further dispatch of that work is blocked. Describe
+incremental paid requests and compatible answer
+reuse without promising a per-session cost cap.
 
 Follow [the reusable Jev check contract](docs/smart-burn-checks.md#reusable-jev-check-contract) when adding a
 check-owned projection, input window, question set, or reducer. See

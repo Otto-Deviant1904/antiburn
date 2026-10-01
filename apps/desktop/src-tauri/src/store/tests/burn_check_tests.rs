@@ -1098,7 +1098,13 @@ fn unsupported_candidates_do_not_starve_later_sessions_in_the_bounded_batch() {
     assert_eq!(first.len(), 16);
     for candidate in &first {
         store
-            .record_burn_check_candidate_issue(candidate, true, 0, 40_000)
+            .record_burn_check_candidate_issue_for_check(
+                "ignored_instructions",
+                candidate,
+                true,
+                0,
+                40_000,
+            )
             .unwrap();
     }
     let next = store
@@ -1195,7 +1201,13 @@ fn unavailable_evidence_retries_without_erasing_a_current_result() {
         .unwrap();
 
     store
-        .record_burn_check_candidate_issue(&candidate, false, 50_000, 40_002)
+        .record_burn_check_candidate_issue_for_check(
+            "ignored_instructions",
+            &candidate,
+            false,
+            50_000,
+            40_002,
+        )
         .unwrap();
     let assessment = store
         .burn_check_assessment(&record.key, "ignored_instructions")
@@ -1542,7 +1554,7 @@ fn persisted_usage_recovery_survives_restart_expiry_and_replay() {
     );
     assert!(
         reopened
-            .burn_check_request_is_unresolved("persisted-request")
+            .burn_check_requests_are_unresolved(&["persisted-request".to_owned()])
             .unwrap()
     );
     assert_eq!(
@@ -1615,13 +1627,15 @@ fn persisted_usage_recovery_survives_restart_expiry_and_replay() {
     );
     assert!(
         reopened
-            .burn_check_request_is_unresolved("persisted-request")
+            .burn_check_requests_are_unresolved(&["persisted-request".to_owned()])
             .unwrap()
     );
-    reopened.resolve_burn_check_request(&dispatched_id).unwrap();
+    reopened
+        .clear_burn_check_request_outcomes(&["persisted-request".to_owned()])
+        .unwrap();
     assert!(
         !reopened
-            .burn_check_request_is_unresolved("persisted-request")
+            .burn_check_requests_are_unresolved(&["persisted-request".to_owned()])
             .unwrap()
     );
     drop(reopened);
@@ -1697,7 +1711,7 @@ fn usage_recovery_rolls_back_and_retries_once() {
     );
     assert!(
         reopened
-            .burn_check_request_is_unresolved("persisted-failure")
+            .burn_check_requests_are_unresolved(&["persisted-failure".to_owned()])
             .unwrap()
     );
     assert_eq!(
@@ -1789,7 +1803,7 @@ fn deleting_a_session_forgets_its_reservation_identity_but_keeps_cost_totals() {
         .unwrap();
     assert!(
         !store
-            .burn_check_request_is_unresolved("delete-exact-request")
+            .burn_check_requests_are_unresolved(&["delete-exact-request".to_owned()])
             .unwrap()
     );
     let before_delete = store.burn_check_usage_summary().unwrap();
@@ -1840,20 +1854,59 @@ fn clearing_session_data_removes_assessment_progress_cache_and_usage() {
         .queue_burn_check_assessment(&input, 40_000, 180)
         .unwrap();
     store
-        .cache_assessment_response(CachedAssessmentResponse {
-            provider: "synthetic-provider".to_owned(),
-            request_digest: "digest-clear".to_owned(),
-            returned_model: "model-v1".to_owned(),
-            response_json: "{}".to_owned(),
-            input_tokens: 1,
-            output_tokens: 0,
-            created_at_epoch: 40_000,
-        })
+        .claim_burn_check_assessment(&input, 40_000, 300, 180)
+        .unwrap();
+    let BurnCheckReservation::Reserved(cache_reservation) = store
+        .reserve_burn_check_usage(&input, "synthetic-provider", "model-v1", 1, 40_000, 180)
+        .unwrap()
+    else {
+        panic!("usage reservation should be available");
+    };
+    store
+        .record_burn_check_response(
+            &cache_reservation,
+            CachedAssessmentResponse {
+                provider: "synthetic-provider".to_owned(),
+                request_digest: "digest-clear".to_owned(),
+                returned_model: "model-v1".to_owned(),
+                response_json: "{}".to_owned(),
+                input_tokens: 1,
+                output_tokens: 0,
+                created_at_epoch: 40_000,
+            },
+        )
         .unwrap();
     store.set_internal_value("internal:jevBurnCheckHistoryBatchEpochV1", "40000");
+
+    let mut unresolved_input = input.clone();
+    unresolved_input.input_revision = "clear-unresolved-revision".to_owned();
+    store
+        .queue_burn_check_assessment(&unresolved_input, 40_001, 180)
+        .unwrap();
+    store
+        .claim_burn_check_assessment(&unresolved_input, 40_001, 300, 180)
+        .unwrap();
+    let BurnCheckReservation::Reserved(unresolved_reservation) = store
+        .reserve_burn_check_usage(
+            &unresolved_input,
+            "synthetic-provider",
+            "model-v1",
+            1,
+            40_001,
+            180,
+        )
+        .unwrap()
+    else {
+        panic!("usage reservation should be available");
+    };
     assert!(
         store
-            .track_burn_check_request("clear-request", "clear-reservation", 40_000)
+            .track_burn_check_request("clear-request", &unresolved_reservation, 40_001)
+            .unwrap()
+    );
+    assert!(
+        store
+            .burn_check_requests_are_unresolved(&["clear-request".to_owned()])
             .unwrap()
     );
 
@@ -1861,7 +1914,7 @@ fn clearing_session_data_removes_assessment_progress_cache_and_usage() {
     store.clear_local_session_data().unwrap();
     assert!(
         !store
-            .burn_check_request_is_unresolved("clear-request")
+            .burn_check_requests_are_unresolved(&["clear-request".to_owned()])
             .unwrap()
     );
     assert!(

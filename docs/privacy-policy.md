@@ -41,9 +41,12 @@ assessments. Past requests cannot be withdrawn from TypeSafe.
 Antiburn keeps local assessment progress and compatible answers so a restart or
 session append can reuse completed work. A changed action, instruction snapshot,
 selection, question, or model can require new paid work. A timeout or cancelled
-request after dispatch can have an unknown billing outcome; Antiburn blocks
-automatic repeat dispatch for that unresolved work but cannot determine whether
-TypeSafe billed it. For a finding, Antiburn also keeps bounded excerpts of the
+request after dispatch can have an unknown billing outcome. Antiburn can make up
+to three total dispatch attempts while it tries to recover an unknown result.
+Earlier dispatched attempts may have incurred charges. If the result remains
+unknown after those attempts, Antiburn blocks further dispatch for that work.
+It cannot determine whether TypeSafe charged an earlier attempt. For a finding, Antiburn
+also keeps bounded excerpts of the
 instruction and action used for that comparison so the example remains visible
 if the session changes. These excerpts stay local and are removed with the
 session or local assessment data. Request bounds and usage reservations limit

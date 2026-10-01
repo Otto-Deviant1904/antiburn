@@ -158,9 +158,9 @@ pub(super) fn burn_check_display_facts(
             None,
             None,
         ),
-        FindingCause::IgnoredInstructionConflict { source, .. } => (
+        FindingCause::IgnoredInstructionConflict(evidence) => (
             BurnCheckResourceKind::Session,
-            safe_display_value(source),
+            safe_display_value(&evidence.source),
             None,
             None,
         ),
@@ -176,8 +176,8 @@ pub(super) fn burn_check_display_facts(
         resource_kind,
         resource_identity,
         instruction_title: match finding.cause() {
-            FindingCause::IgnoredInstructionConflict { rule_heading, .. } => {
-                safe_display_value(rule_heading)
+            FindingCause::IgnoredInstructionConflict(evidence) => {
+                safe_display_value(&evidence.rule_heading)
             }
             _ => None,
         },
@@ -409,7 +409,7 @@ pub(super) fn display_estimate_input(cause: &FindingCause) -> Option<SavingsEsti
             cache_read_rate: None,
             pricing_revision: None,
         }),
-        FindingCause::IgnoredInstructionConflict { .. } => None,
+        FindingCause::IgnoredInstructionConflict(_) => None,
     }
 }
 
@@ -442,7 +442,7 @@ pub(super) fn finding_quantity(
         FindingCause::CacheChurn {
             repeated_tokens, ..
         } => (Some(*repeated_tokens), Some(BurnCheckQuantityUnit::Tokens)),
-        FindingCause::IgnoredInstructionConflict { .. } => (None, None),
+        FindingCause::IgnoredInstructionConflict(_) => (None, None),
     }
 }
 

@@ -650,20 +650,6 @@ impl Store {
             .map_err(Into::into)
     }
 
-    pub fn skip_historical_burn_check(&self, candidate: &BurnCheckCandidate) -> anyhow::Result<()> {
-        self.lock().execute(
-            "UPDATE burn_check_assessment SET status = 'superseded'
-              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
-                AND check_id = 'ignored_instructions' AND boundary_generation = -2
-                AND status = 'idle'",
-            rusqlite::params![
-                candidate.session.key.environment_key,
-                candidate.session.key.agent,
-                candidate.session.key.session_id
-            ],
-        )?;
-        Ok(())
-    }
     /// Capture the current source cursor for each check before enabling paid work.
     pub fn capture_burn_check_boundaries(
         &self,
@@ -954,24 +940,6 @@ impl Store {
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(candidates)
-    }
-
-    /// Record an unsupported source or retryable evidence gap without blocking
-    /// the rest of the bounded candidate batch.
-    pub fn record_burn_check_candidate_issue(
-        &self,
-        candidate: &BurnCheckCandidate,
-        unsupported: bool,
-        retry_at_epoch: i64,
-        now_epoch: i64,
-    ) -> anyhow::Result<()> {
-        self.record_burn_check_candidate_issue_for_check(
-            "ignored_instructions",
-            candidate,
-            unsupported,
-            retry_at_epoch,
-            now_epoch,
-        )
     }
 
     pub fn record_burn_check_candidate_issue_for_check(

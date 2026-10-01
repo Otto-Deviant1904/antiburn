@@ -579,8 +579,12 @@ historical run, and when an assessment publishes a terminal result. Labels are `
 `history_window`, `backfill`, and `execution`. Details are respectively
 `enabled`/`disabled`, `future`/`7_days`/`30_days`, `requested`, and
 `completed`/`failed`. Intermediate ranges do not emit this event. Cached and
-retried work can finish an attempt without another provider call. No provider
-response, input digest, session ID, key, selected text, or error text is sent.
+retried work can finish an assessment without another provider call. These are
+assessment-level terminal outcomes, not whole-backfill completion events. A
+dispatched assessment has up to three total attempts, not three retries;
+previous attempts may have been charged. If dispatch outcome remains unresolved,
+Antiburn blocks further dispatch for that work. No provider response, input
+digest, session ID, key, selected text, or error text is sent.
 
 Every added or changed event must document:
 

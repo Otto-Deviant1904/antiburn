@@ -423,38 +423,15 @@ export function BurnCheckTargetDetail({
                     )}
                     {evidenceState.status === "loaded" &&
                       (evidenceState.evidence?.status === "unavailable" ? (
-                        ignoredInstructions ? (
-                          <div
-                            role="status"
-                            className="space-y-2 type-callout text-label-secondary"
-                          >
-                            <p>The check recorded this instruction and action summary:</p>
-                            <p>
-                              <span className="font-medium text-label">Instruction: </span>
-                              {target.display.instructionTitle ??
-                                sourcePath ??
-                                "Instruction in this finding"}
-                            </p>
-                            <p>
-                              <span className="font-medium text-label">Session action: </span>
-                              {target.finding.observation}
-                            </p>
-                            <p className="text-label-tertiary">
-                              The exact instruction and action text is no longer available.
-                            </p>
-                          </div>
-                        ) : (
-                          <p role="status" className="type-callout text-label-secondary">
-                            The original evidence is no longer available.
-                          </p>
-                        )
+                        <p role="status" className="type-callout text-label-secondary">
+                          The original evidence is no longer available.
+                        </p>
                       ) : (
                         <div>
                           <ol className="space-y-3">
                             {orderedEvidence(evidenceState.evidence?.items ?? []).map(
                               (item) =>
-                                (item.label !== "context" ||
-                                  (!ignoredInstructions && showContext)) && (
+                                (item.label !== "context" || showContext) && (
                                   <li
                                     key={`${item.label}:${item.reference}`}
                                     className="space-y-1"
@@ -462,16 +439,10 @@ export function BurnCheckTargetDetail({
                                     <div className="flex min-w-0 items-baseline justify-between gap-3">
                                       <p className="type-callout font-medium text-label">
                                         {item.label === "observedAction"
-                                          ? ignoredInstructions
-                                            ? "What happened"
-                                            : "Session action"
+                                          ? "Session action"
                                           : item.label === "context"
                                             ? "Context"
-                                            : ignoredInstructions
-                                              ? item.startLine
-                                                ? `Instruction (from line${item.endLine !== item.startLine ? "s" : ""} ${item.startLine}${item.endLine !== item.startLine ? `–${item.endLine}` : ""})`
-                                                : "Instruction"
-                                              : `Instruction · ${item.sourceLabel}${item.startLine ? ` · line${item.endLine !== item.startLine ? "s" : ""} ${item.startLine}${item.endLine !== item.startLine ? `–${item.endLine}` : ""}` : ""}`}
+                                            : `Instruction · ${item.sourceLabel}${item.startLine ? ` · line${item.endLine !== item.startLine ? "s" : ""} ${item.startLine}${item.endLine !== item.startLine ? `–${item.endLine}` : ""}` : ""}`}
                                       </p>
                                       {item.observedAtMs != null && (
                                         <time
@@ -501,18 +472,9 @@ export function BurnCheckTargetDetail({
                                 ),
                             )}
                           </ol>
-                          {ignoredInstructions &&
-                            evidenceState.evidence?.items.some(
-                              (item) => item.limitation === outdatedInstructionsNote,
-                            ) && (
-                              <p className="mt-2 type-caption text-label-tertiary">
-                                {outdatedInstructionsNote}
-                              </p>
-                            )}
                         </div>
                       ))}
-                    {!ignoredInstructions &&
-                      evidenceState.status === "loaded" &&
+                    {evidenceState.status === "loaded" &&
                       evidenceState.evidence?.status === "available" &&
                       evidenceState.evidence.items.some((item) => item.label === "context") && (
                         <button

@@ -1595,7 +1595,6 @@ where
         Box<
             dyn Future<
                     Output = (
-                        usize,
                         std::sync::Arc<JevRequestBatch>,
                         Result<JevResponse, JevError>,
                     ),
@@ -1604,7 +1603,7 @@ where
         >,
     >;
 
-    let mut pending = batches.into_iter().enumerate().collect::<VecDeque<_>>();
+    let mut pending = batches.into_iter().collect::<VecDeque<_>>();
     let mut tasks: Vec<Option<BatchFuture<'_>>> = std::iter::repeat_with(|| None)
         .take(MAX_PARALLEL_REQUESTS)
         .collect();
@@ -1619,7 +1618,7 @@ where
                     std::task::Poll::Ready(result) => Some(result),
                     std::task::Poll::Pending => None,
                 });
-            if let Some((_index, batch, result)) = ready {
+            if let Some((batch, result)) = ready {
                 let result = result.and_then(|response| {
                     validate_jev_response(&response, &batch.request)?;
                     Ok(response)
@@ -1641,11 +1640,11 @@ where
             && !pending.is_empty()
             && start_ready
             && let Some(slot) = tasks.iter().position(Option::is_none)
-            && let Some((index, batch)) = pending.pop_front()
+            && let Some(batch) = pending.pop_front()
         {
             let batch = std::sync::Arc::new(batch);
             let request = execute(std::sync::Arc::clone(&batch));
-            tasks[slot] = Some(Box::pin(async move { (index, batch, request.await) }));
+            tasks[slot] = Some(Box::pin(async move { (batch, request.await) }));
             next_start = Some(Box::pin(tokio::time::sleep(REQUEST_START_INTERVAL)));
             context.waker().wake_by_ref();
         }

@@ -10,9 +10,22 @@ Smart Burn Checks means all Jev-powered Burn Checks. Each check declares its
 own evidence selection, questions, and result policy. Ignored Instructions is
 the first implementation, not the definition of the shared framework.
 
-Ignored Instructions needs a TypeSafe API
-key. Jev requests can use paid API credits. Antiburn shows local usage totals in
-Settings.
+Ignored Instructions needs a TypeSafe API key. Jev requests can use paid API
+credits. Antiburn shows local usage estimates in Settings.
+
+## Setup, controls, and local data
+
+Open **Settings → Checks**, enable Smart Burn Checks, and add a TypeSafe API key.
+The setting controls automatic checks. You can choose future sessions or start a
+7- or 30-day history review there. The history window applies to the requested
+review; it does not prove which instructions were active during older actions.
+
+Pause checks to stop new assessments while keeping the saved key. Remove the key
+to stop new TypeSafe requests. Remove a session to delete that session's local
+check state; already-incurred usage remains in the local totals. **Clear Local
+Data** also removes local sessions, check state, unresolved requests, and usage
+totals. See the [privacy policy](privacy-policy.md) for retention and data
+handling details.
 
 ## Ignored Instructions
 
@@ -99,11 +112,11 @@ apart.
 ### How sampling works
 
 One rule-text range and one action-text range form a possible comparison. The
-default sampling budget is **256 high-priority rule/action pairs per review**.
-It bounds comparisons in a pass, not TypeSafe requests, tokens, elapsed time,
-or lifetime cost. A large session can have many more possible pairs. The check
-records possible, sampled, and remaining pair counts. Remaining pairs are a
-sampling gap, not known violations.
+default sample is **256 high-priority rule/action pairs per review**. This is
+not exhaustive coverage or a cap on possible comparisons, TypeSafe requests,
+tokens, elapsed time, or cost. A large session can have many more possible
+pairs. The check records possible, sampled, and remaining pair counts. Remaining
+pairs are a sampling gap, not known violations.
 
 The local selector scores meaningful word overlap; words found in fewer actions
 carry more weight. A tool name or literal action path mentioned by a rule adds
@@ -120,11 +133,13 @@ eligible pairs not yet sampled. The worker saves sampled pair identities and
 compatible typed answers across completed reviews, appends, and restarts.
 Unchanged sampled pairs do not consume the next pass because content pages or
 request packing changed. With no new work, the remaining gap decreases over
-successive reviews; new actions or rules can increase it. Reuse requires stable
-source-bound rule and action identities and the same selected text, relevant
-context, instruction version, model, and check revisions. A matching path or
-similar wording alone is insufficient. An uncertain dispatched request stays
-blocked from automatic repeat billing.
+successive reviews; new actions or rules can increase it. Reuse requires the
+same identifiable instruction rule and action, selected text, relevant context,
+instruction version, model, and check revisions. A matching path or similar
+wording alone is insufficient. When a request outcome is unknown, recovery can
+make up to three total dispatch attempts. An earlier dispatched attempt may
+already have incurred a charge. If the result is still unknown after those
+attempts, Antiburn blocks further dispatch of that work.
 
 An **event window** contains one action and up to two sampled rules. This sends
 the action once for those rules instead of copying it into a separate window
@@ -435,7 +450,9 @@ rows. It applies part and byte limits to selected fields. SQLite extracts only
 selected normalized tool fields but can read excluded row metadata. Each tool
 request is normalized once when its source adapter writes the fenced content
 row. Raw request content remains local; selected
-paths, commands, queries, or enabled edit content form the assessment input.
+paths, commands, queries, and other eligible tool input form the assessment
+input. Dedicated edit-tool bodies are excluded from Ignored Instructions, while
+inline Bash scripts and patches can be selected as command input.
 Schema migration 63 adds normalized fields. Parser revision 45 refreshes older
 rows for operation metadata, native field bindings, recorded path context, and
 truncated-request isolation and exact result joins. Metadata uses the existing
@@ -617,11 +634,12 @@ request that the provider already accepted. A timeout, cancellation after
 dispatch, or unusable response can leave the billing outcome unknown. The
 store keeps hashed work-item identities and a reservation ID for that outcome
 and blocks another dispatch of the same semantic work for that session
-incarnation and check, including after append or repacking. The worker retries
-unknown outcomes a bounded number of times; unresolved identities then block a
-repeat dispatch of the same semantic work. At 1,024 unresolved identities it
-stops new dispatch rather than evict an identity and risk repeat billing. Clear
-Local Data removes this state.
+incarnation and check, including after append or repacking. An unknown outcome
+allows up to three total dispatch attempts. Earlier dispatched attempts may
+have incurred charges. If the outcome remains unknown, the identity stays
+unresolved and further dispatch of that work is blocked. At 1,024 unresolved
+identities, the worker stops new dispatch rather than evict an identity and risk
+repeat billing. Clear Local Data removes this state.
 
 At startup, recovery records any dispatched reservation without a final usage
 settlement as one unknown outcome. It preserves unresolved identities and their

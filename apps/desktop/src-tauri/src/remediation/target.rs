@@ -237,11 +237,9 @@ pub(super) fn finding_scope(
             "session".to_owned(),
             session_scope_key(secret, agent, session_id),
         ),
-        FindingCause::IgnoredInstructionConflict {
-            source,
-            instruction_scope,
-            ..
-        } => {
+        FindingCause::IgnoredInstructionConflict(evidence) => {
+            let source = &evidence.source;
+            let instruction_scope = &evidence.instruction_scope;
             if source.starts_with("home:") || *instruction_scope == InstructionScope::Global {
                 (
                     "global".to_owned(),
@@ -638,30 +636,32 @@ mod instruction_scope_tests {
     use antiburn_local::analysis::ignored_instructions::{FindingCertainty, InstructionProvenance};
 
     fn cause(source: &str, instruction_scope: InstructionScope) -> FindingCause {
-        FindingCause::IgnoredInstructionConflict {
-            assessment_revision: "revision".to_owned(),
-            assessment_finding_id: "finding".to_owned(),
-            instruction_id: "instruction".to_owned(),
-            instruction_digest: "digest".to_owned(),
-            instruction_excerpt: "Use the reviewed workflow.".to_owned(),
-            instruction_excerpt_truncated: false,
-            rule_id: "rule".to_owned(),
-            rule_heading: "Rules".to_owned(),
-            start_line: 1,
-            end_line: 1,
-            source: source.to_owned(),
-            provenance: InstructionProvenance::CurrentFileComparison,
-            instruction_scope,
-            action_id: "action".to_owned(),
-            action_digest: "action-digest".to_owned(),
-            action_excerpt: "git push --force".to_owned(),
-            action_excerpt_truncated: false,
-            action_timestamp_ms: Some(1),
-            nearby_context_ids: Vec::new(),
-            counterevidence_ids: Vec::new(),
-            certainty: FindingCertainty::Possible,
-            limitations: Box::default(),
-        }
+        FindingCause::IgnoredInstructionConflict(Box::new(
+            antiburn_local::remediation::IgnoredInstructionConflictEvidence {
+                assessment_revision: "revision".to_owned(),
+                assessment_finding_id: "finding".to_owned(),
+                instruction_id: "instruction".to_owned(),
+                instruction_digest: "digest".to_owned(),
+                instruction_excerpt: "Use the reviewed workflow.".to_owned(),
+                instruction_excerpt_truncated: false,
+                rule_id: "rule".to_owned(),
+                rule_heading: "Rules".to_owned(),
+                start_line: 1,
+                end_line: 1,
+                source: source.to_owned(),
+                provenance: InstructionProvenance::CurrentFileComparison,
+                instruction_scope,
+                action_id: "action".to_owned(),
+                action_digest: "action-digest".to_owned(),
+                action_excerpt: "git push --force".to_owned(),
+                action_excerpt_truncated: false,
+                action_timestamp_ms: Some(1),
+                nearby_context_ids: Vec::new(),
+                counterevidence_ids: Vec::new(),
+                certainty: FindingCertainty::Possible,
+                limitations: Box::default(),
+            },
+        ))
     }
 
     #[test]

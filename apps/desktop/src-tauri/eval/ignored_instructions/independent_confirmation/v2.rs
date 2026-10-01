@@ -82,6 +82,64 @@ fn resolve_case(case: &Case) -> (String, Vec<String>, Vec<String>) {
     (revision, citations, exact)
 }
 
+#[test]
+#[ignore = "offline semantic-reference binding export; updates the v2 binding sidecar"]
+fn resolve_independent_v2_bindings_offline() {
+    let (semantic, cases) = semantic_cases();
+    let mut bindings: Value =
+        serde_json::from_str(BINDINGS).expect("confirmation bindings are JSON");
+    assert_eq!(bindings["binding_status"], "resolved");
+    assert_eq!(
+        bindings["semantic_sha256"],
+        Sha256::digest(SEMANTIC.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    );
+    let semantic_by_id = semantic["cases"]
+        .as_array()
+        .expect("semantic confirmation has cases")
+        .iter()
+        .map(|case| (case["id"].as_str().expect("semantic case ID is text"), case))
+        .collect::<BTreeMap<_, _>>();
+    let entries = bindings["cases"]
+        .as_array_mut()
+        .expect("confirmation bindings have cases");
+    assert_eq!(entries.len(), cases.len());
+    for entry in entries {
+        let id = entry["id"].as_str().expect("binding case ID is text");
+        let case = cases
+            .iter()
+            .find(|case| case.id == id)
+            .unwrap_or_else(|| panic!("unknown binding case: {id}"));
+        let semantic_case = semantic_by_id[id];
+        let input_hash =
+            Sha256::digest(serde_json::to_vec(semantic_case).expect("semantic case serializes"))
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+        assert_eq!(entry["input_hash"], input_hash, "{id} input hash");
+        assert_eq!(case.expected, semantic_case["expected"], "{id} outcome");
+        let (revision, citations, exact) = resolve_case(case);
+        entry["revisions"] = json!(revision);
+        entry["citation_ids"] = json!(citations);
+        entry["bindings"] = json!(exact);
+    }
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+        "../../../crates/antiburn-local/tests/fixtures/ignored_instructions/independent_confirmation_v2.bindings.json",
+    );
+    let temporary = path.with_extension("bindings.json.pending");
+    let bytes = serde_json::to_vec_pretty(&bindings).expect("bindings serialize");
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .expect("create temporary v2 binding sidecar");
+    std::io::Write::write_all(&mut file, &bytes).expect("write v2 binding sidecar");
+    file.sync_all().expect("sync v2 binding sidecar");
+    std::fs::rename(&temporary, &path).expect("replace v2 binding sidecar");
+}
+
 fn native_selected(case: &Case) -> Vec<Value> {
     input(case)
         .content

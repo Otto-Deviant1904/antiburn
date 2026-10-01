@@ -220,7 +220,9 @@ describe("BurnChecksView detail content", { timeout: 15_000 }, () => {
         ],
       },
     )
-    expect(await screen.findByText("Could not load evidence.")).toBeVisible()
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not load the saved excerpts.",
+    )
     fireEvent.click(screen.getByRole("button", { name: "Retry" }))
     fireEvent.click(screen.getByRole("button", { name: "Passed checks 1" }))
     fireEvent.click(screen.getByRole("button", { name: /Unused skills, Passed/ }))
@@ -243,7 +245,9 @@ describe("BurnChecksView detail content", { timeout: 15_000 }, () => {
       }),
     )
     expect(screen.queryByText("private late action")).not.toBeInTheDocument()
-    expect(screen.queryByText("Could not load evidence.")).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole("alert", { name: "Could not load the saved excerpts." }),
+    ).not.toBeInTheDocument()
     expect(
       commands.noteInteraction.mock.calls.filter(
         ([event]) => event.kind === "ignoredInstructionObserved" && event.stage === "evidence",
@@ -286,7 +290,7 @@ describe("BurnChecksView detail content", { timeout: 15_000 }, () => {
     const snooze = screen.getByRole("button", { name: "Snooze" })
     const fix = screen.getByRole("button", { name: "Fix" })
     const heading = screen.getByRole("heading", { name: "Old model usage", level: 2 })
-    const titleRow = heading.parentElement
+    const titleRow = heading.parentElement?.parentElement
     const failedCount = within(action.closest("header")!).getByText("1 failed")
     expect(action).toBeEnabled()
     expect(description).toHaveClass("w-full")

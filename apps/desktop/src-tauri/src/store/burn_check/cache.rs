@@ -16,14 +16,6 @@ pub struct CachedAssessmentResponse {
 }
 
 impl Store {
-    pub fn burn_check_request_is_unresolved(&self, identity: &str) -> anyhow::Result<bool> {
-        Ok(self.lock().query_row(
-            "SELECT EXISTS(SELECT 1 FROM burn_check_request_outcome WHERE request_identity = ?1)",
-            [identity],
-            |row| row.get(0),
-        )?)
-    }
-
     pub fn burn_check_requests_are_unresolved(
         &self,
         identities: &[String],
@@ -94,14 +86,6 @@ impl Store {
         Ok(())
     }
 
-    pub fn resolve_burn_check_request(&self, reservation_id: &str) -> anyhow::Result<()> {
-        self.lock().execute(
-            "DELETE FROM burn_check_request_outcome WHERE reservation_id = ?1",
-            [reservation_id],
-        )?;
-        Ok(())
-    }
-
     /// Atomically settle usage and cache a successful typed response.
     pub fn record_burn_check_response(
         &self,
@@ -159,16 +143,6 @@ impl Store {
                 input_tokens: row.get(2)?, output_tokens: row.get(3)?, created_at_epoch: row.get(4)?,
             }),
         ).optional()?)
-    }
-
-    /// Cache only a typed response for its exact request digest.
-    pub fn cache_assessment_response(&self, entry: CachedAssessmentResponse) -> anyhow::Result<()> {
-        validate_cache_entry(&entry)?;
-        let mut connection = self.lock();
-        let transaction = connection.transaction()?;
-        insert_cache_entry(&transaction, &entry)?;
-        transaction.commit()?;
-        Ok(())
     }
 }
 
@@ -288,7 +262,11 @@ mod tests {
                     .is_none()
             );
             for identity in &identities {
-                assert!(store.burn_check_request_is_unresolved(identity).unwrap());
+                assert!(
+                    store
+                        .burn_check_requests_are_unresolved(std::slice::from_ref(identity))
+                        .unwrap()
+                );
             }
             store
                 .lock()
@@ -331,9 +309,10 @@ mod tests {
                 .track_burn_check_request("request-1", "reservation-2", 2)
                 .unwrap()
         );
-        assert!(store.burn_check_request_is_unresolved("request-1").unwrap());
-        store.resolve_burn_check_request("reservation-1").unwrap();
-        assert!(!store.burn_check_request_is_unresolved("request-1").unwrap());
+        let request = ["request-1".to_owned()];
+        assert!(store.burn_check_requests_are_unresolved(&request).unwrap());
+        store.clear_burn_check_request_outcomes(&request).unwrap();
+        assert!(!store.burn_check_requests_are_unresolved(&request).unwrap());
         for index in 0..1024 {
             assert!(
                 store
@@ -368,12 +347,12 @@ mod tests {
 
         assert!(
             !store
-                .burn_check_request_is_unresolved("retry-this")
+                .burn_check_requests_are_unresolved(&["retry-this".to_owned()])
                 .unwrap()
         );
         assert!(
             store
-                .burn_check_request_is_unresolved("keep-blocked")
+                .burn_check_requests_are_unresolved(&["keep-blocked".to_owned()])
                 .unwrap()
         );
     }
@@ -388,45 +367,6 @@ mod tests {
             output_tokens: 1,
             created_at_epoch: 1000 + index as i64,
         }
-    }
-
-    #[test]
-    fn indexed_cache_has_byte_bounds_and_uses_exact_lookup_index() {
-        let store = Store::open_in_memory(std::path::Path::new("synthetic-state")).unwrap();
-        for index in 0..150 {
-            store
-                .cache_assessment_response(entry(index, &"😀".repeat(1024)))
-                .unwrap();
-        }
-        let connection = store.lock();
-        let (count, bytes): (usize, usize) = connection.query_row(
-            "SELECT count(*), sum(length(CAST(response_json AS BLOB))) FROM burn_check_response_cache", [],
-            |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
-        assert!(count <= MAX_RESPONSE_CACHE_ENTRIES);
-        assert!(bytes <= MAX_RESPONSE_CACHE_BYTES);
-        let plan: String = connection.query_row(
-            "EXPLAIN QUERY PLAN SELECT response_json FROM burn_check_response_cache WHERE provider = ?1 AND request_digest = ?2", ["synthetic-provider", "digest-149"], |row| row.get(3)).unwrap();
-        assert!(plan.contains("SEARCH") && plan.contains("INDEX"), "{plan}");
-        println!("phase6 cache count={count} payload_bytes={bytes}; query_plan={plan}");
-        drop(connection);
-        assert!(
-            store
-                .cached_assessment_response("synthetic-provider", "digest-149", 2000)
-                .unwrap()
-                .is_some()
-        );
-        assert!(
-            store
-                .cached_assessment_response("other-provider", "digest-149", 2000)
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            store
-                .cached_assessment_response("synthetic-provider", "digest-149", 700000)
-                .unwrap()
-                .is_none()
-        );
     }
 
     #[test]
@@ -450,38 +390,5 @@ mod tests {
             .unwrap();
         let restored: String = connection.query_row("SELECT response_json FROM burn_check_response_cache WHERE request_digest = 'digest-1'", [], |row| row.get(0)).unwrap();
         assert_eq!(restored, saved.response_json);
-    }
-
-    #[test]
-    fn profile_indexed_cache_reads_against_legacy_blob_decode() {
-        let store = Store::open_in_memory(std::path::Path::new("synthetic-state")).unwrap();
-        let entries = (0..128)
-            .map(|index| entry(index, &"x".repeat(3000)))
-            .collect::<Vec<_>>();
-        let write_start = std::time::Instant::now();
-        for entry in &entries {
-            store.cache_assessment_response(entry.clone()).unwrap();
-        }
-        let write_us = write_start.elapsed().as_micros();
-        let raw = serde_json::json!({"entries": entries}).to_string();
-        let start = std::time::Instant::now();
-        for _ in 0..100 {
-            std::hint::black_box(serde_json::from_str::<Value>(&raw).unwrap());
-        }
-        let legacy_us = start.elapsed().as_micros();
-        let start = std::time::Instant::now();
-        for _ in 0..100 {
-            std::hint::black_box(
-                store
-                    .cached_assessment_response("synthetic-provider", "digest-127", 2000)
-                    .unwrap()
-                    .unwrap(),
-            );
-        }
-        println!(
-            "phase6 cache profile entries=128 blob_bytes={} writes_us={write_us} legacy_decode_100_us={legacy_us} indexed_read_100_us={}",
-            raw.len(),
-            start.elapsed().as_micros()
-        );
     }
 }

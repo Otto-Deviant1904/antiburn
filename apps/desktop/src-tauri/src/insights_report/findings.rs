@@ -498,10 +498,7 @@ pub(crate) fn finding_observation_ms(evidence: &SessionEvidence, finding: &Findi
         FindingCause::OldModelUsage { model, .. } | FindingCause::CacheChurn { model, .. } => {
             models?.by_model.get(model).map(|tokens| tokens.last_ts_ms)
         }
-        FindingCause::IgnoredInstructionConflict {
-            action_timestamp_ms,
-            ..
-        } => *action_timestamp_ms,
+        FindingCause::IgnoredInstructionConflict(evidence) => evidence.action_timestamp_ms,
         FindingCause::OveruseOfFastMode {
             provider,
             api,
@@ -1113,10 +1110,10 @@ mod tests {
             );
             for finding in findings {
                 assert_eq!(finding.source_format, case.format);
-                let FindingCause::IgnoredInstructionConflict { action_id, .. } = finding.cause()
-                else {
+                let FindingCause::IgnoredInstructionConflict(evidence) = finding.cause() else {
                     panic!("expected an ignored-instruction finding")
                 };
+                let action_id = &evidence.action_id;
                 assert!(
                     prepared
                         .actions

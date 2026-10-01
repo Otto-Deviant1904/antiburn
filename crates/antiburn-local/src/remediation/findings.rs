@@ -95,30 +95,34 @@ pub enum FindingCause {
         paid_tokens: u64,
         threshold_basis_points: u32,
     },
-    IgnoredInstructionConflict {
-        assessment_revision: String,
-        assessment_finding_id: String,
-        instruction_id: String,
-        instruction_digest: String,
-        instruction_excerpt: String,
-        instruction_excerpt_truncated: bool,
-        rule_id: String,
-        rule_heading: String,
-        start_line: u32,
-        end_line: u32,
-        source: String,
-        provenance: InstructionProvenance,
-        instruction_scope: InstructionScope,
-        action_id: String,
-        action_digest: String,
-        action_excerpt: String,
-        action_excerpt_truncated: bool,
-        action_timestamp_ms: Option<i64>,
-        nearby_context_ids: Vec<String>,
-        counterevidence_ids: Vec<String>,
-        certainty: FindingCertainty,
-        limitations: Box<Vec<String>>,
-    },
+    IgnoredInstructionConflict(Box<IgnoredInstructionConflictEvidence>),
+}
+
+/// Evidence for one ignored-instruction conflict.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IgnoredInstructionConflictEvidence {
+    pub assessment_revision: String,
+    pub assessment_finding_id: String,
+    pub instruction_id: String,
+    pub instruction_digest: String,
+    pub instruction_excerpt: String,
+    pub instruction_excerpt_truncated: bool,
+    pub rule_id: String,
+    pub rule_heading: String,
+    pub start_line: u32,
+    pub end_line: u32,
+    pub source: String,
+    pub provenance: InstructionProvenance,
+    pub instruction_scope: InstructionScope,
+    pub action_id: String,
+    pub action_digest: String,
+    pub action_excerpt: String,
+    pub action_excerpt_truncated: bool,
+    pub action_timestamp_ms: Option<i64>,
+    pub nearby_context_ids: Vec<String>,
+    pub counterevidence_ids: Vec<String>,
+    pub certainty: FindingCertainty,
+    pub limitations: Box<Vec<String>>,
 }
 
 impl FindingCause {
@@ -133,7 +137,7 @@ impl FindingCause {
             Self::OldModelUsage { .. } => DetectorId::OldModelUsage,
             Self::OveruseOfFastMode { .. } => DetectorId::OveruseOfFastMode,
             Self::CacheChurn { .. } => DetectorId::CacheChurn,
-            Self::IgnoredInstructionConflict { .. } => DetectorId::IgnoredInstructions,
+            Self::IgnoredInstructionConflict(_) => DetectorId::IgnoredInstructions,
         }
     }
 
@@ -187,13 +191,12 @@ impl FindingCause {
                 .chain([model.as_str()])
                 .collect(),
             Self::CacheChurn { model, .. } => vec![model],
-            Self::IgnoredInstructionConflict {
-                source,
-                rule_heading,
-                rule_id,
-                action_id,
-                ..
-            } => vec![source, rule_heading, rule_id, action_id],
+            Self::IgnoredInstructionConflict(evidence) => vec![
+                &evidence.source,
+                &evidence.rule_heading,
+                &evidence.rule_id,
+                &evidence.action_id,
+            ],
         }
     }
 }
@@ -333,12 +336,13 @@ impl Finding {
                 "model": model, "thresholdBasisPoints": threshold_basis_points,
             })
             .to_string(),
-            FindingCause::IgnoredInstructionConflict {
-                rule_id,
-                rule_heading,
-                source,
-                ..
-            } => {
+            FindingCause::IgnoredInstructionConflict(evidence) => {
+                let IgnoredInstructionConflictEvidence {
+                    rule_id,
+                    rule_heading,
+                    source,
+                    ..
+                } = evidence.as_ref();
                 let heading = rule_heading.trim();
                 if heading.is_empty() {
                     serde_json::json!({
@@ -370,12 +374,12 @@ impl Finding {
             source_format: self.source_format,
             observation: super::prompts::prompt_parts(&self.cause).0,
             facts: display_facts(&self.cause),
-            certainty: match self.cause {
-                FindingCause::IgnoredInstructionConflict { certainty, .. } => Some(certainty),
+            certainty: match &self.cause {
+                FindingCause::IgnoredInstructionConflict(evidence) => Some(evidence.certainty),
                 _ => None,
             },
-            instruction_provenance: match self.cause {
-                FindingCause::IgnoredInstructionConflict { provenance, .. } => Some(provenance),
+            instruction_provenance: match &self.cause {
+                FindingCause::IgnoredInstructionConflict(evidence) => Some(evidence.provenance),
                 _ => None,
             },
         })
@@ -560,30 +564,32 @@ impl Finding {
         {
             return None;
         }
-        let cause = FindingCause::IgnoredInstructionConflict {
-            assessment_revision: assessment_revision.to_owned(),
-            assessment_finding_id: assessment_finding.id.clone(),
-            instruction_id: reference.instruction_id.clone(),
-            instruction_digest: reference.instruction_digest.clone(),
-            instruction_excerpt: assessment_finding.instruction_excerpt.clone(),
-            instruction_excerpt_truncated: assessment_finding.instruction_excerpt_truncated,
-            rule_id: reference.rule_id.clone(),
-            rule_heading: reference.rule_heading.clone(),
-            start_line: reference.start_line,
-            end_line: reference.end_line,
-            source: reference.source.clone(),
-            provenance: reference.provenance,
-            instruction_scope: reference.scope,
-            action_id: reference.action_id.clone(),
-            action_digest: reference.action_digest.clone(),
-            action_excerpt: assessment_finding.action_excerpt.clone(),
-            action_excerpt_truncated: assessment_finding.action_excerpt_truncated,
-            action_timestamp_ms: reference.action_timestamp_ms,
-            nearby_context_ids: assessment_finding.nearby_context_ids.clone(),
-            counterevidence_ids: assessment_finding.counterevidence_ids.clone(),
-            certainty: assessment_finding.certainty,
-            limitations: Box::new(assessment_finding.limitations.clone()),
-        };
+        let cause = FindingCause::IgnoredInstructionConflict(Box::new(
+            IgnoredInstructionConflictEvidence {
+                assessment_revision: assessment_revision.to_owned(),
+                assessment_finding_id: assessment_finding.id.clone(),
+                instruction_id: reference.instruction_id.clone(),
+                instruction_digest: reference.instruction_digest.clone(),
+                instruction_excerpt: assessment_finding.instruction_excerpt.clone(),
+                instruction_excerpt_truncated: assessment_finding.instruction_excerpt_truncated,
+                rule_id: reference.rule_id.clone(),
+                rule_heading: reference.rule_heading.clone(),
+                start_line: reference.start_line,
+                end_line: reference.end_line,
+                source: reference.source.clone(),
+                provenance: reference.provenance,
+                instruction_scope: reference.scope,
+                action_id: reference.action_id.clone(),
+                action_digest: reference.action_digest.clone(),
+                action_excerpt: assessment_finding.action_excerpt.clone(),
+                action_excerpt_truncated: assessment_finding.action_excerpt_truncated,
+                action_timestamp_ms: reference.action_timestamp_ms,
+                nearby_context_ids: assessment_finding.nearby_context_ids.clone(),
+                counterevidence_ids: assessment_finding.counterevidence_ids.clone(),
+                certainty: assessment_finding.certainty,
+                limitations: Box::new(assessment_finding.limitations.clone()),
+            },
+        ));
         Some(finding(evidence, cause))
     }
 }

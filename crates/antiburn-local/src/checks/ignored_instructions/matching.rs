@@ -521,8 +521,8 @@ fn prepared_rule_items(
 fn properties_by_rule<'a>(
     responses: &BTreeMap<&str, &JevWorkItemResult>,
     items: &BTreeMap<RuleKey<'a>, JevWorkItem>,
-) -> Result<BTreeMap<RuleKey<'a>, RuleProperties>, JevError> {
-    Ok(items
+) -> BTreeMap<RuleKey<'a>, RuleProperties> {
+    items
         .iter()
         .map(|(key, item)| {
             (
@@ -530,7 +530,7 @@ fn properties_by_rule<'a>(
                 IgnoredInstructionClassifier.properties(responses.get(item.id.as_str()).copied()),
             )
         })
-        .collect())
+        .collect()
 }
 
 fn action_family(comparison: &CandidateComparison, context: &JevSessionContext) -> &'static str {
@@ -566,7 +566,7 @@ pub(super) fn apply_rule_matching(
         .map(|(id, result)| (id.as_str(), result))
         .collect();
     let classification_items = prepared_rule_items(&plan.prepared)?;
-    let properties_by_rule = properties_by_rule(&responses, &classification_items)?;
+    let properties_by_rule = properties_by_rule(&responses, &classification_items);
     let mut observable_obligations = BTreeMap::new();
     for comparison in &plan.prepared.comparisons {
         let properties = properties_by_rule
@@ -871,7 +871,7 @@ pub(super) fn add_obligation_coverage(
     let mut states = BTreeMap::new();
     let mut bindings = BTreeMap::new();
     let items = prepared_rule_items(plan)?;
-    let properties = properties_by_rule(responses, &items)?;
+    let properties = properties_by_rule(responses, &items);
     for comparison in &plan.comparisons {
         let Some(properties) = properties.get(&rule_key(comparison)) else {
             continue;
@@ -967,7 +967,7 @@ pub(super) fn classified_completion(
 ) -> Result<BTreeMap<String, CompletionCoverage>, JevError> {
     let mut completion = BTreeMap::new();
     let items = prepared_rule_items(plan)?;
-    let properties = properties_by_rule(responses, &items)?;
+    let properties = properties_by_rule(responses, &items);
     for comparison in &plan.comparisons {
         if properties
             .get(&rule_key(comparison))
@@ -997,7 +997,7 @@ pub(super) fn guard_unclassified_observations<'a>(
     }
     let mut guarded = plan.clone();
     let items = prepared_rule_items(plan)?;
-    let properties = properties_by_rule(responses, &items)?;
+    let properties = properties_by_rule(responses, &items);
     for comparison in &plan.comparisons {
         if guarded.observable_obligations.contains_key(&comparison.id) {
             continue;

@@ -2020,7 +2020,20 @@ fn selected_history_reaches_candidates_after_the_first_worker_page() {
         .unwrap();
     assert_eq!(first.len(), 16);
     for candidate in &first {
-        store.skip_historical_burn_check(candidate).unwrap();
+        store
+            .lock()
+            .execute(
+                "UPDATE burn_check_assessment SET status = 'superseded'
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+                AND check_id = 'ignored_instructions' AND boundary_generation = -2
+                AND status = 'idle'",
+                rusqlite::params![
+                    candidate.session.key.environment_key,
+                    candidate.session.key.agent,
+                    candidate.session.key.session_id
+                ],
+            )
+            .unwrap();
     }
     let second = store
         .burn_check_candidates("ignored_instructions", now, 180, 16)

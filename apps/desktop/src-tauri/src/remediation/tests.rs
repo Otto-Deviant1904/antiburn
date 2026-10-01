@@ -12,7 +12,8 @@ use antiburn_local::insights::ReportWindow;
 
 #[test]
 fn ignored_instruction_evidence_uses_the_saved_instruction_and_action_excerpts() {
-    let cause = FindingCause::IgnoredInstructionConflict {
+    let cause = FindingCause::IgnoredInstructionConflict(Box::new(
+        antiburn_local::remediation::IgnoredInstructionConflictEvidence {
         assessment_revision: "revision".to_owned(),
         assessment_finding_id: "finding".to_owned(),
         instruction_id: "instruction".to_owned(),
@@ -36,7 +37,8 @@ fn ignored_instruction_evidence_uses_the_saved_instruction_and_action_excerpts()
         counterevidence_ids: Vec::new(),
         certainty: antiburn_local::analysis::ignored_instructions::FindingCertainty::Likely,
         limitations: Box::default(),
-    };
+        },
+    ));
 
     let saved = stored_instruction_evidence(&cause).unwrap();
 

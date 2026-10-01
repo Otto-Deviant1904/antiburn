@@ -122,7 +122,10 @@ Incomplete source evidence and provider errors differ from a sampling gap and
 cannot produce Clean. A user can select a 7-day or 30-day session-activity
 window in Settings, but this does not create a historical
 instruction snapshot. No additional `SourceFormat` is accepted by this request
-path.
+path. Ignored Instructions supports exactly `ClaudeJsonl`,
+`CodexRolloutJsonl`, `OpenCodeSqliteV2`, `PiV3Jsonl`,
+`CursorCliAgentJsonl`, and `AntigravityBrainJsonl`; `OpenCodeJsonl` is not
+supported for this check.
 
 The twelve-field source capability and Ignored Instructions selection matrix is
 maintained in [Smart Burn Checks selected-input coverage](smart-burn-checks.md#ignored-instructions-selected-input-coverage).
