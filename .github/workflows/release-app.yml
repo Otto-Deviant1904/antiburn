@@ -848,9 +848,9 @@ jobs:
   remote-helper:
     name: Package Linux remote helpers
     needs: [verify, trusted-main-ci]
+    # No version input: the helper names its archive from its own manifest, and
+    # `verify` has already refused the tag if that manifest disagrees with it.
     uses: ./.github/workflows/build-remote-helper.yml
-    with:
-      version: ${{ needs.verify.outputs.version }}
 
   draft:
     name: Draft the release
