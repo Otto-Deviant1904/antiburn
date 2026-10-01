@@ -1318,8 +1318,10 @@ pub fn get_insights_backlog(app: tauri::AppHandle) -> InsightsBacklog {
     }
 }
 
-/// Days of history the insights report covers.
-const INSIGHTS_WINDOW_DAYS: i64 = 30;
+/// Days of history the insights report covers. Shares
+/// [`crate::store::model::CURRENT_WINDOW_DAYS`] with discovery, so the report
+/// window and the discovery window can never drift apart.
+const INSIGHTS_WINDOW_DAYS: i64 = crate::store::model::CURRENT_WINDOW_DAYS as i64;
 
 fn epoch_now() -> i64 {
     SystemTime::now()

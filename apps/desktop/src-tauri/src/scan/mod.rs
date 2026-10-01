@@ -75,12 +75,14 @@
 //! a retry), and [`crate::notifications`] once per run of the app, for someone
 //! who is not looking at antiburn at all.
 //!
-//! Every pass is bounded: discovery is windowed to the widest activity view,
-//! and the per-session metadata reads run at a fixed concurrency, so one pass
-//! cannot grow with the size of the machine. [`crate::insights_worker`] bounds
-//! its own analysis concurrency separately. The separate retention policy
-//! expires indexed sessions; the bounded discovery window does not. The
-//! scheduler is a single handle the app aborts on exit, so nothing outlives
+//! Every routine pass is bounded: discovery is windowed to
+//! [`crate::store::model::CURRENT_WINDOW_DAYS`], and the per-session metadata reads
+//! run at a fixed concurrency, so one pass cannot grow with the size of the
+//! machine. [`crate::insights_worker`] bounds its own analysis concurrency
+//! separately. The separate retention policy expires indexed sessions; the
+//! bounded discovery window does not. The dedicated historical pass widens
+//! the window instead — see its own module section below. The scheduler is a
+//! single handle the app aborts on exit, so nothing outlives
 //! the process.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -920,27 +922,18 @@ struct PassSummary {
     re_described: usize,
 }
 
-/// The age limit discovery applies to one pass, in seconds.
+/// The age limit discovery applies to a routine pass, in seconds.
 ///
-/// A recurring pass keeps the narrow window, so background work does not grow
-/// with the size of the machine. Two cases cover the whole index instead:
-///
-/// - Unlimited retention. A retention setting that promises to keep every
-///   session cannot reach sessions that discovery never lists, and the
-///   narrow window is the only thing that hides them.
-/// - A manual rescan. Settings › General › Historical scan tells the reader
-///   that it reads every session file from the start.
-///
-/// Discovery treats a limit of `now` as no limit: the cutoff becomes zero and
-/// every session qualifies. See `discovery::mod`.
-fn discovery_window_secs(session_data_retention_days: i32, trigger: &ScanTrigger, now: i64) -> i64 {
-    if session_data_retention_days == crate::store::RETAIN_SESSION_DATA_FOREVER
-        || matches!(trigger, ScanTrigger::ManualRescan)
-    {
-        return now;
-    }
-    i64::from(crate::store::MAX_ACTIVITY_DAYS) * 86_400
-}
+/// Every routine trigger gets exactly this window — launch, the tick, a
+/// watcher burst, a settings transition, a repository toggle, an explicit
+/// `scan_now` rescan, and so on. None of them widen it: a recurring pass
+/// doing more work than this would grow with the size of the machine, and a
+/// pass that discovered more than the checks report covers would make the
+/// two counts disagree. [`crate::store::model::CURRENT_WINDOW_DAYS`] is the shared
+/// constant, so discovery and the report can never drift apart. The
+/// dedicated historical pass uses its own, retention-based window instead —
+/// see `history_window_secs`.
+const CURRENT_WINDOW_SECS: i64 = crate::store::model::CURRENT_WINDOW_DAYS as i64 * 86_400;
 
 /// The body of one pass. Split out so [`run_pass`] owns only the in-flight
 /// bookkeeping and the events.
@@ -958,11 +951,7 @@ async fn pass(
 ) -> anyhow::Result<PassSummary> {
     let store = app.state::<Store>();
     let now = unix_now();
-    let since_secs = discovery_window_secs(
-        store.settings_snapshot().session_data_retention_days,
-        trigger,
-        now,
-    );
+    let since_secs = CURRENT_WINDOW_SECS;
 
     let ignored = ignored_paths::load_ignored(store.state_dir(), IGNORE_SCOPE);
     let home = home_dir().unwrap_or_default();
