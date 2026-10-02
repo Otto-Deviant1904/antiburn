@@ -227,7 +227,7 @@ pub use vendors::{has_dedicated_reader, reader_for, reader_for_input};
 // Devin Local migration-17 reader. Existing sessions must reparse these inputs.
 // +1 for request envelopes and patch renames; +1 for exact Claude result joins
 // and empty/non-text content handling. Refresh stored normalized fields.
-pub const PARSER_REVISION: i64 = 45;
+pub const PARSER_REVISION: i64 = 46;
 // +1 for turn row chart signals: `has_thinking`, `last_tool`, and
 // `subagent_launches` are now ingest-derived row columns
 // (`rows::turn_row_from_event`), so every session must reparse to

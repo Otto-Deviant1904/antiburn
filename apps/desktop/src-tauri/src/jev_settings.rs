@@ -552,10 +552,34 @@ pub(crate) fn run_check_backfill(
         .and_then(|value| value.parse::<u8>().ok())
         .filter(|days| matches!(days, 7 | 30))
         .ok_or_else(|| "Choose the last 7 or 30 days first.".to_owned())?;
+    let store = app.state::<Store>();
+    store
+        .reconcile_evidence_revisions(
+            &crate::agents::evidence_cohort(),
+            crate::analysis::projection_revisions(),
+        )
+        .map_err(|_| "Could not refresh session evidence for this check.".to_owned())?;
     let queued = app
         .state::<Store>()
         .enqueue_burn_checks(time::OffsetDateTime::now_utc().unix_timestamp(), days)
         .map_err(|_| "Could not queue checks for this period.".to_owned())?;
+    let progress = store
+        .historical_burn_check_status(time::OffsetDateTime::now_utc().unix_timestamp(), 180)
+        .map_err(|_| "Could not read check progress.".to_owned())?;
+    ::tracing::info!(
+        event = "ignored_instruction_history_requested",
+        days,
+        queued,
+        total = progress.total,
+        waiting_for_data = progress.waiting_for_data,
+        waiting_for_idle = progress.waiting_for_idle,
+        ready = progress.ready,
+        running = progress.running,
+        completed = progress.completed,
+        skipped = progress.skipped,
+        failed = progress.failed,
+    );
+    crate::insights_worker::wake(&app);
     crate::jev_worker::wake(&app);
     #[cfg(feature = "analytics")]
     crate::analytics::record(

@@ -1698,8 +1698,10 @@ impl Store {
                        AND session.agent = evidence.agent
                        AND session.session_id = evidence.session_id
                        AND (
-                           evidence.analyzed_generation IS NOT session.source_generation
-                           OR evidence.parser_revision IS NOT ?{parser_parameter}
+                            evidence.analyzed_generation IS NOT session.source_generation
+                            OR (evidence.status NOT IN ('failed', 'unsupported')
+                                AND evidence.processed_fingerprint IS NOT session.source_fingerprint)
+                            OR evidence.parser_revision IS NOT ?{parser_parameter}
                            OR evidence.analyzer_revision IS NOT ?{analyzer_parameter}
                            OR evidence.evidence_schema_revision IS NOT ?{evidence_parameter}
                            OR (evidence.status NOT IN ('failed', 'unsupported')
@@ -1857,8 +1859,8 @@ impl Store {
                     SELECT 1 FROM session
                      WHERE session.environment_key = evidence.environment_key
                        AND session.agent = evidence.agent
-                       AND session.session_id = evidence.session_id
-                       AND session.source_generation = ?5
+                        AND session.session_id = evidence.session_id
+                        AND session.source_generation = ?5
                 )",
             params![
                 claim.key.environment_key,
@@ -2087,6 +2089,25 @@ impl Store {
         relations: &[RelationRecord],
         sources: &[SourcePublishOutcome],
     ) -> Result<bool> {
+        self.publish_projections_with_source_fingerprint(
+            record,
+            started_at_epoch,
+            completion,
+            relations,
+            sources,
+            Some(record.source_fingerprint.as_str()),
+        )
+    }
+
+    pub fn publish_projections_with_source_fingerprint(
+        &self,
+        record: &AnalysisRecord,
+        started_at_epoch: Option<i64>,
+        completion: &EvidenceCompletion,
+        relations: &[RelationRecord],
+        sources: &[SourcePublishOutcome],
+        source_fingerprint: Option<&str>,
+    ) -> Result<bool> {
         let source_sets = publication::SourceSets::new(sources)?;
         let config_attribution = crate::remediation::publication_config_attribution(
             self,
@@ -2193,8 +2214,9 @@ impl Store {
                     SELECT 1 FROM session
                      WHERE session.environment_key = evidence.environment_key
                        AND session.agent = evidence.agent
-                       AND session.session_id = evidence.session_id
-                       AND session.source_generation = ?5
+                        AND session.session_id = evidence.session_id
+                        AND session.source_generation = ?5
+                        AND session.source_fingerprint IS ?24
                 )",
             params![
                 record.key.environment_key,
@@ -2202,7 +2224,7 @@ impl Store {
                 record.key.session_id,
                 completion.status.as_str(),
                 record.analyzed_generation,
-                record.source_fingerprint,
+                source_fingerprint,
                 record.parser_revision,
                 record.analyzer_revision,
                 completion.evidence_schema_revision,
@@ -2240,6 +2262,7 @@ impl Store {
                     &record.precedence_hash
                 }),
                 config_attribution_values_json(&config_attribution.records),
+                source_fingerprint,
             ],
         )?;
         if updated == 0 {
@@ -2555,6 +2578,7 @@ impl Store {
             || evidence.analyzed_generation != Some(source_generation)
             || evidence.processed_fingerprint != source_fingerprint
             || evidence.parser_revision != Some(PARSER_REVISION)
+            || evidence.analyzer_revision != Some(ANALYZER_REVISION)
             || evidence.evidence_schema_revision != Some(EVIDENCE_SCHEMA_REVISION)
         {
             return Ok(None);

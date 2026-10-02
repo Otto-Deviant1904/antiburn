@@ -352,7 +352,10 @@ pub(crate) fn backoff_secs(retry_count: i64) -> i64 {
 fn published_status(evidence: &SessionEvidence) -> PublishedEvidence {
     let supported = DetectorId::ALL
         .into_iter()
-        .any(|detector| eligible(detector, evidence));
+        .any(|detector| eligible(detector, evidence))
+        || antiburn_local::analysis::ignored_instructions::source_supported(
+            evidence.capabilities.source_format,
+        );
     if supported {
         PublishedEvidence::Ready
     } else {
@@ -428,12 +431,14 @@ pub(crate) fn apply_outcome(
                 .evidence(&claim.key)?
                 .and_then(|row| row.evidence_json)
                 .and_then(|json| serde_json::from_str::<SessionEvidence>(&json).ok());
-            let applied = store.publish_projections(
+            let verified_source_fingerprint = pass.source_fingerprint.as_deref();
+            let applied = store.publish_projections_with_source_fingerprint(
                 &record,
                 pass.analysis.started_at_epoch,
                 &completion,
                 &relations,
                 &pass.source_outcomes,
+                verified_source_fingerprint,
             )?;
             let ingested = applied
                 .then(|| {

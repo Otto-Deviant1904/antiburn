@@ -123,6 +123,49 @@ fn recent_history_uses_last_activity_even_for_old_sessions() {
 }
 
 #[test]
+fn terminal_evidence_is_not_reported_as_waiting_for_analysis() {
+    let store = store();
+    let records = [
+        session("terminal-failed", NOW - 1),
+        session("terminal-unsupported", NOW - 1),
+    ];
+    store
+        .upsert_sessions(&records, &crate::agents::evidence_cohort())
+        .unwrap();
+    for record in &records {
+        add_session_content(&store, record);
+    }
+    store
+        .capture_burn_check_boundaries(&["ignored_instructions"], NOW - 10)
+        .unwrap();
+    store
+        .lock()
+        .execute(
+            "UPDATE session_evidence SET status = CASE session_id
+                 WHEN 'terminal-failed' THEN 'failed' ELSE 'unsupported' END
+              WHERE agent = 'claude-code' AND session_id LIKE 'terminal-%'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(store.enqueue_burn_checks(NOW, 7).unwrap(), 2);
+    store
+        .lock()
+        .execute(
+            "UPDATE burn_check_assessment SET status = 'queued'
+              WHERE session_id LIKE 'terminal-%'",
+            [],
+        )
+        .unwrap();
+
+    let status = store.historical_burn_check_status(NOW, 180).unwrap();
+    assert_eq!(status.waiting_for_data, 0);
+    assert_eq!(status.queued, 0);
+    assert_eq!(status.failed, 1);
+    assert_eq!(status.skipped, 1);
+    assert_eq!(status.total, 2);
+}
+
+#[test]
 fn thirty_day_history_uses_the_selected_activity_window() {
     let store = store();
     let records = [
@@ -195,11 +238,13 @@ fn selected_history_session_reaches_the_running_worker_state() {
         .lock()
         .execute(
             "UPDATE session_evidence SET status = 'ready', analyzed_generation = ?1,
-             parser_revision = ?2, evidence_schema_revision = ?3, published_fence = 1
+             parser_revision = ?2, analyzer_revision = ?3,
+             evidence_schema_revision = ?4, published_fence = 1
              WHERE session_id = 'worker-candidate'",
             rusqlite::params![
                 generation,
                 antiburn_local::analysis::PARSER_REVISION,
+                antiburn_local::analysis::ANALYZER_REVISION,
                 antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION,
             ],
         )
@@ -586,10 +631,12 @@ fn recent_history_waits_for_active_sessions_and_survives_worker_pages() {
                     WHERE s.environment_key = session_evidence.environment_key
                       AND s.agent = session_evidence.agent
                       AND s.session_id = session_evidence.session_id),
-                 parser_revision = ?1, evidence_schema_revision = ?2,
-                 published_fence = 1",
+                  parser_revision = ?1, analyzer_revision = ?2,
+                  evidence_schema_revision = ?3,
+                  published_fence = 1",
                 rusqlite::params![
                     antiburn_local::analysis::PARSER_REVISION,
+                    antiburn_local::analysis::ANALYZER_REVISION,
                     antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION
                 ],
             )

@@ -1,6 +1,6 @@
 # Burn Check Source Coverage
 
-Audit date: 2026-09-30.
+Audit date: 2026-10-02.
 
 This document covers local passive session evidence and the desktop's read-only
 current resource inventory. Session evidence supports historical claims. Current
@@ -134,10 +134,13 @@ in this matrix.
 ## Ignored Instructions Evidence
 
 The first-tier product matrix is the source of truth for reachable check
-support. Its six supported formats are `ClaudeJsonl`, `CodexRolloutJsonl`,
-`OpenCodeSqliteV2`, `PiV3Jsonl`, `CursorCliAgentJsonl`, and
-`AntigravityBrainJsonl`. `OpenCodeJsonl` and all other formats are unavailable
-for this check. Clean
+support. Supported formats are `ClaudeJsonl`, `CodexRolloutJsonl`,
+`OpenCodeSqliteV2`, `PiV3Jsonl`, `CursorCliAgentJsonl`, `CursorCliStoreDb`,
+`CursorChatStoreDb`, `CursorIdeComposer`, `AntigravityBrainJsonl`, and
+`AntigravitySqlite`. Cursor store and composer routes retain normalized user
+and assistant text but may not retain native tool inputs. Antigravity SQLite
+needs assessable companion transcript content. Other Cursor and Antigravity
+formats remain unavailable. `OpenCodeJsonl` is also unavailable. Clean
 means no finding among sampled comparisons in a completed review, not that all
 session content is safe. Unsampled pairs remain a coverage gap. Observed
 current-file versions govern future actions; the first observation cannot
@@ -181,7 +184,7 @@ Auto Fix. The limit stays beside the row it qualifies.
 Ignored Instructions uses stored Jev assessments, including bounded local excerpts
 of each finding's compared instruction and action, and the current published
 content projection. Finding, sampled Clean, and prompt support are limited to
-the six exact source formats listed below. The worker records observed
+the exact source formats listed above. The worker records observed
 instruction versions with session positions. A changed version applies to
 future actions, while a requested history run can compare older actions to
 current rules as a possible issue. Without an authoritative snapshot this is
@@ -286,7 +289,10 @@ enter review even when compatible old judgments are reused. Settings can also
 queue sessions active in the selected 7-day or 30-day window. Historical runs
 freeze a cohort for Settings progress. Unchanged completed sessions are not
 requeued by another click; due failures, changed activity, or a new evaluator
-revision can be selected again. Historical runs use the same source and evidence
+revision can be selected again. Startup requeues stale evidence when its verified
+source identity, generation, or parser, analyzer, or evidence-schema revision is
+old. Terminal source failures and unsupported evidence count as failed or
+skipped instead of waiting for analysis forever. Historical runs use the same source and evidence
 limits; they do not establish complete history outside the selected window.
 
 | Agent       | Check | Finding | Prompt | Auto Fix | Verification | Estimate | Reachability limit                                                                                                                           |
@@ -295,8 +301,8 @@ limits; they do not establish complete history outside the selected window.
 | Codex       | I     | Y       | Y      | N        | N            | N        | `CodexRolloutJsonl` only; Clean covers sampled post-observation comparisons.                                                                 |
 | OpenCode    | I     | Y       | Y      | N        | N            | N        | `OpenCodeSqliteV2` only; JSONL export is not enabled; Clean covers sampled post-observation comparisons.                                    |
 | Pi          | I     | Y       | Y      | N        | N            | N        | `PiV3Jsonl` only; Clean covers sampled post-observation comparisons.                                                                         |
-| Cursor      | I     | Y       | Y      | N        | N            | N        | `CursorCliAgentJsonl` only; other Cursor formats are not enabled; Clean covers sampled post-observation comparisons.                        |
-| Antigravity | I     | Y       | Y      | N        | N            | N        | `AntigravityBrainJsonl` only; Clean covers sampled post-observation comparisons.                                                              |
+| Cursor      | I     | Y       | Y      | N        | N            | N        | `CursorCliAgentJsonl`, `CursorCliStoreDb`, `CursorChatStoreDb`, and `CursorIdeComposer`; normalized store/composer routes may omit tool inputs. |
+| Antigravity | I     | Y       | Y      | N        | N            | N        | `AntigravityBrainJsonl` and `AntigravitySqlite`; SQLite needs assessable companion transcript content.                                         |
 | Claude Code | D     | Y       | Y      | Y        | N            | Y        | Auto Fix needs one supported current compaction control.                                                                                     |
 | Claude Code | T     | Y       | Y      | Y        | Y            | Y        | Verification needs a later complete lower control on the same route and model.                                                               |
 | Claude Code | S     | Y       | Y      | Y        | N            | Y        | Auto Fix needs one exact named agent definition.                                                                                             |

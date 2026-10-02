@@ -744,7 +744,11 @@ pub const fn source_supported(source_format: SourceFormat) -> bool {
             | SourceFormat::PiV3Jsonl
             | SourceFormat::OpenCodeSqliteV2
             | SourceFormat::CursorCliAgentJsonl
+            | SourceFormat::CursorCliStoreDb
+            | SourceFormat::CursorChatStoreDb
+            | SourceFormat::CursorIdeComposer
             | SourceFormat::AntigravityBrainJsonl
+            | SourceFormat::AntigravitySqlite
     )
 }
 
@@ -769,6 +773,17 @@ pub const fn field_capability(
     field: JevInputField,
 ) -> JevFieldCapability {
     if !source_supported(source_format) {
+        return JevFieldCapability::Unavailable;
+    }
+    if matches!(
+        source_format,
+        SourceFormat::CursorCliStoreDb
+            | SourceFormat::CursorChatStoreDb
+            | SourceFormat::CursorIdeComposer
+    ) && !matches!(
+        field,
+        JevInputField::AssistantMessage | JevInputField::UserMessage
+    ) {
         return JevFieldCapability::Unavailable;
     }
     match field {
@@ -1988,5 +2003,52 @@ mod tests {
                 .contains(&"truncated_source_content".to_owned())
         );
         assert!(!result.complete);
+    }
+
+    #[test]
+    fn ignored_instruction_source_gate_covers_native_routes_only() {
+        for format in [
+            SourceFormat::ClaudeJsonl,
+            SourceFormat::CodexRolloutJsonl,
+            SourceFormat::OpenCodeSqliteV2,
+            SourceFormat::PiV3Jsonl,
+            SourceFormat::CursorCliAgentJsonl,
+            SourceFormat::CursorCliStoreDb,
+            SourceFormat::CursorChatStoreDb,
+            SourceFormat::CursorIdeComposer,
+            SourceFormat::AntigravityBrainJsonl,
+            SourceFormat::AntigravitySqlite,
+        ] {
+            assert!(source_supported(format), "{format:?}");
+        }
+        for format in [
+            SourceFormat::CursorLegacyChatJson,
+            SourceFormat::AntigravityWorkspaceChatJson,
+            SourceFormat::AntigravityCascadeJson,
+        ] {
+            assert!(!source_supported(format), "{format:?}");
+        }
+    }
+
+    #[test]
+    fn synthesized_cursor_routes_cannot_claim_complete_tool_evidence() {
+        for format in [
+            SourceFormat::CursorCliStoreDb,
+            SourceFormat::CursorChatStoreDb,
+            SourceFormat::CursorIdeComposer,
+        ] {
+            let mut content = projection_fixture();
+            content.source_format = format;
+            let prepared = select_session_content(
+                &content,
+                crate::checks::ignored_instructions::INPUT_SELECTION,
+            );
+            assert!(!prepared.complete, "{format:?}");
+            assert!(
+                prepared
+                    .limitations
+                    .contains(&"selected_field_unavailable_for_source".to_owned())
+            );
+        }
     }
 }

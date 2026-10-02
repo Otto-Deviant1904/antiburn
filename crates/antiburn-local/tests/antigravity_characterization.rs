@@ -236,6 +236,29 @@ fn companion_parse_gaps_do_not_hide_database_findings() {
 }
 
 #[test]
+fn sqlite_companion_retains_assistant_content_without_double_counting_usage() {
+    let (directory, input) = database(true, false, false, false);
+    let path = directory
+        .path()
+        .join("brain/synthetic/.system_generated/logs/transcript.jsonl");
+    let mut transcript = std::fs::read_to_string(&path).unwrap();
+    transcript.push_str(
+        r#"{"type":"PLANNER_RESPONSE","step_index":2,"content":"companion assistant content","usage":{"input_tokens":900,"output_tokens":900}}"#,
+    );
+    transcript.push('\n');
+    std::fs::write(path, transcript).unwrap();
+
+    let normalized = reader_for("antigravity").normalize(&input).unwrap();
+    let assistant = normalized
+        .events
+        .iter()
+        .find(|event| event.role == antiburn_local::analysis::Role::Assistant)
+        .expect("SQLite companion assistant event");
+    assert_eq!(assistant.usage.input_tokens, 0);
+    assert_eq!(assistant.usage.output_tokens, 0);
+}
+
+#[test]
 fn cli_transcript_recovers_settings_model_thinking_tools_and_clipped_coverage() {
     let mut input = input(RawSource::Jsonl(
         include_str!("fixtures/antigravity_characterization/cli_realistic.jsonl").to_owned(),

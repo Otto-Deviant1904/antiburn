@@ -40,6 +40,7 @@ fn session(session_id: &str, updated_at: i64) -> SessionRecord {
 }
 
 fn projection_record(key: SessionKey, fingerprint: &str, generation: i64) -> AnalysisRecord {
+    let revisions = crate::analysis::projection_revisions();
     AnalysisRecord {
         key,
         model_breakdown_json: "{}".into(),
@@ -51,9 +52,9 @@ fn projection_record(key: SessionKey, fingerprint: &str, generation: i64) -> Ana
         source_fingerprint: fingerprint.into(),
         pricing_generation: 1,
         analyzed_generation: generation,
-        parser_revision: 1,
-        analyzer_revision: 1,
-        metrics_schema_revision: 1,
+        parser_revision: revisions.parser_revision,
+        analyzer_revision: revisions.analyzer_revision,
+        metrics_schema_revision: revisions.metrics_schema_revision,
     }
 }
 
@@ -90,7 +91,7 @@ fn evidence_completion(
     EvidenceCompletion {
         claim_fence: claim.claim_fence,
         status,
-        evidence_schema_revision: 1,
+        evidence_schema_revision: EVIDENCE_SCHEMA_REVISION,
         evidence_json,
     }
 }
@@ -137,14 +138,15 @@ fn turn_row_for(source_key: &str, turn_index: u64) -> TurnRow {
 }
 
 fn resume_snapshot(source_fingerprint: &str) -> StoredResume {
+    let revisions = crate::analysis::resume_revisions();
     StoredResume {
         snapshot: vec![1, 2, 3],
-        snapshot_revision: 1,
-        parser_revision: 1,
-        analyzer_revision: 1,
-        metrics_schema_revision: 1,
-        evidence_schema_revision: 1,
-        coverage_schema_revision: 1,
+        snapshot_revision: revisions.snapshot_revision,
+        parser_revision: revisions.parser_revision,
+        analyzer_revision: revisions.analyzer_revision,
+        metrics_schema_revision: revisions.metrics_schema_revision,
+        evidence_schema_revision: revisions.evidence_schema_revision,
+        coverage_schema_revision: revisions.coverage_schema_revision,
         source_fingerprint: source_fingerprint.to_owned(),
     }
 }
@@ -678,6 +680,7 @@ fn published_turn_content_requires_a_fresh_winning_fence() {
     let store = store();
     let (mut record, claim) = claimed_projection(&store, "published-content", 100, 60);
     record.parser_revision = PARSER_REVISION;
+    record.analyzer_revision = ANALYZER_REVISION;
     let key = record.key.clone();
     let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
     let mut published_row = turn_row(0);

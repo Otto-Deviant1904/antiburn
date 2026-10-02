@@ -172,12 +172,6 @@ fn ignored_instruction_session_statuses_in(
                     Some("This session has no saved content to check."),
                 ));
             }
-            let Some(json) = json else {
-                return Ok(ignored_session_status(
-                    crate::dto::SessionHygieneStatus::Checking,
-                    Some("Waiting for current session evidence."),
-                ));
-            };
             if status.as_deref() == Some("unsupported") {
                 return Ok(ignored_session_status(
                     crate::dto::SessionHygieneStatus::CouldntCheck,
@@ -190,6 +184,12 @@ fn ignored_instruction_session_statuses_in(
                     Some("Could not read complete session evidence."),
                 ));
             }
+            let Some(json) = json else {
+                return Ok(ignored_session_status(
+                    crate::dto::SessionHygieneStatus::Checking,
+                    Some("Waiting for current session evidence."),
+                ));
+            };
             if current != Some(true) || status.as_deref() != Some("ready") {
                 return Ok(ignored_session_status(
                     crate::dto::SessionHygieneStatus::Checking,
@@ -783,6 +783,16 @@ mod tests {
         assert_eq!(
             session_status(&connection).status,
             crate::dto::SessionHygieneStatus::Checking
+        );
+        connection
+            .execute_batch(
+                "UPDATE burn_check_assessment SET status = 'idle';
+                 UPDATE session_evidence SET status = 'failed', evidence_json = NULL;",
+            )
+            .unwrap();
+        assert_eq!(
+            session_status(&connection).status,
+            crate::dto::SessionHygieneStatus::CouldntCheck
         );
     }
 

@@ -74,24 +74,83 @@ fn cases() -> Vec<Case> {
             content_marker: "CURSOR-USER",
         },
         Case {
+            agent: "cursor",
+            format: SourceFormat::CursorCliStoreDb,
+            source: RawSource::Jsonl(
+                concat!(r#"{"role":"user","content":"CURSOR-STORE-USER"}"#, "\n", r#"{"role":"assistant","content":"I will check the project rules."}"#).to_owned(),
+            ),
+            content_marker: "CURSOR-STORE-USER",
+        },
+        Case {
+            agent: "cursor",
+            format: SourceFormat::CursorChatStoreDb,
+            source: RawSource::Jsonl(
+                concat!(r#"{"role":"user","content":"CURSOR-CHAT-USER"}"#, "\n", r#"{"role":"assistant","content":"I will check the project rules."}"#).to_owned(),
+            ),
+            content_marker: "CURSOR-CHAT-USER",
+        },
+        Case {
+            agent: "cursor",
+            format: SourceFormat::CursorIdeComposer,
+            source: RawSource::Jsonl(
+                concat!(r#"{"role":"user","content":"CURSOR-COMPOSER-USER"}"#, "\n", r#"{"role":"assistant","content":"I will check the project rules."}"#).to_owned(),
+            ),
+            content_marker: "CURSOR-COMPOSER-USER",
+        },
+        Case {
             agent: "antigravity",
             format: SourceFormat::AntigravityBrainJsonl,
             source: RawSource::Jsonl(include_str!("fixtures/antigravity_characterization/ignored_instructions_content.jsonl").to_owned()),
             content_marker: "ANTIGRAVITY-USER",
         },
+        Case {
+            agent: "antigravity",
+            format: SourceFormat::AntigravitySqlite,
+            source: RawSource::Sqlite(Default::default()),
+            content_marker: "ANTIGRAVITY-SQLITE-USER",
+        },
     ]
 }
 
 #[tokio::test]
-async fn all_six_first_tier_agents_produce_findings_through_the_production_runner() {
+async fn supported_native_routes_produce_findings_through_the_production_runner() {
     for (index, case) in cases().into_iter().enumerate() {
         let session_id = format!("ignored-instructions-{index}");
-        let sqlite = if case.agent == "opencode" {
+        let sqlite = if matches!(
+            case.format,
+            SourceFormat::OpenCodeSqliteV2 | SourceFormat::AntigravitySqlite
+        ) {
             Some(tempfile::tempdir().expect("synthetic database directory"))
         } else {
             None
         };
-        let source = if let Some(directory) = sqlite.as_ref() {
+        let source = if case.format == SourceFormat::AntigravitySqlite {
+            let directory = sqlite.as_ref().expect("Antigravity database directory");
+            let conversations = directory.path().join("conversations");
+            std::fs::create_dir_all(&conversations).expect("conversation directory");
+            let brain = directory
+                .path()
+                .join("brain/ignored-instructions-9/.system_generated/logs");
+            std::fs::create_dir_all(&brain).expect("brain transcript directory");
+            std::fs::write(
+                brain.join("transcript.jsonl"),
+                concat!(
+                    "{\"source\":\"antigravity_brain\",\"model\":\"test-model\"}",
+                    "\n",
+                    r#"{"type":"USER_INPUT","step_index":1,"userInput":{"userResponse":"ANTIGRAVITY-SQLITE-USER"}}"#,
+                    "\n",
+                    r#"{"type":"PLANNER_RESPONSE","step_index":2,"content":"I will check the project rules.","tool_calls":[{"name":"shell","args":{"command":"true"}}]}"#,
+                    "\n"
+                ),
+            )
+            .expect("companion transcript");
+            let path = conversations.join("ignored-instructions-9.db");
+            let connection = rusqlite::Connection::open(&path).expect("Antigravity database");
+            connection
+                .execute_batch("PRAGMA user_version = 1; CREATE TABLE steps (idx INTEGER, metadata BLOB); CREATE TABLE gen_metadata (idx INTEGER, data BLOB);")
+                .expect("Antigravity schema");
+            RawSource::Sqlite(path)
+        } else if let Some(directory) = sqlite.as_ref() {
             let path = directory.path().join("opencode.db");
             let connection = rusqlite::Connection::open(&path).expect("synthetic database");
             connection.execute_batch(
@@ -187,14 +246,17 @@ async fn all_six_first_tier_agents_produce_findings_through_the_production_runne
             comparison_after: None,
         };
         let jev_context = build_jev_context(&assessment_input).expect("bounded Jev context");
+        let actions = assessment_input.content.actions.clone();
         let check = IgnoredInstructionsCheck;
         let check_plan = check
             .prepare(&jev_context)
             .expect("production check preparation");
         assert!(
             !check_plan.work_items.is_empty(),
-            "{} selects actions",
-            case.agent
+            "{}/{:?} selects actions: {:?}",
+            case.agent,
+            case.format,
+            actions
         );
         let request_sizes = Arc::new(std::sync::Mutex::new(Vec::new()));
         let recorded_sizes = Arc::clone(&request_sizes);
@@ -276,7 +338,10 @@ async fn all_six_first_tier_agents_produce_findings_through_the_production_runne
                     .iter()
                     .any(|event| event.tool_name.as_deref() == Some("shell"))
             );
-            assert_eq!(prepared.excluded_thinking_parts, 1);
+            assert_eq!(
+                prepared.excluded_thinking_parts,
+                u32::from(case.format == SourceFormat::AntigravityBrainJsonl)
+            );
         }
     }
 }
@@ -512,7 +577,7 @@ fn synthetic_response(request: &JevRequest, conflict: bool) -> JevResponse {
 }
 
 fn capabilities(format: SourceFormat) -> SourceCapabilities {
-    match format {
+    let mut capabilities = match format {
         SourceFormat::ClaudeJsonl => SourceCapabilities::claude(),
         SourceFormat::CodexRolloutJsonl => SourceCapabilities::codex(),
         SourceFormat::PiV3Jsonl => SourceCapabilities::pi(),
@@ -521,7 +586,13 @@ fn capabilities(format: SourceFormat) -> SourceCapabilities {
             ..SourceCapabilities::opencode()
         },
         SourceFormat::CursorCliAgentJsonl => SourceCapabilities::cursor(),
+        SourceFormat::CursorCliStoreDb
+        | SourceFormat::CursorChatStoreDb
+        | SourceFormat::CursorIdeComposer => SourceCapabilities::cursor(),
         SourceFormat::AntigravityBrainJsonl => SourceCapabilities::antigravity(),
-        _ => unreachable!("test only uses the six first-tier source formats"),
-    }
+        SourceFormat::AntigravitySqlite => SourceCapabilities::antigravity(),
+        _ => unreachable!("test only uses supported Ignored Instructions formats"),
+    };
+    capabilities.source_format = format;
+    capabilities
 }

@@ -268,15 +268,11 @@ fn title_history_cohort_preserves_all_native_agent_rows() {
 }
 
 fn projection_revisions() -> ProjectionRevisions {
-    ProjectionRevisions {
-        parser_revision: 1,
-        analyzer_revision: 1,
-        metrics_schema_revision: 1,
-        evidence_schema_revision: 1,
-    }
+    crate::analysis::projection_revisions()
 }
 
 fn projection_record(key: SessionKey, fingerprint: &str, generation: i64) -> AnalysisRecord {
+    let revisions = crate::analysis::projection_revisions();
     AnalysisRecord {
         key,
         model_breakdown_json: "{}".into(),
@@ -288,9 +284,9 @@ fn projection_record(key: SessionKey, fingerprint: &str, generation: i64) -> Ana
         source_fingerprint: fingerprint.into(),
         pricing_generation: 1,
         analyzed_generation: generation,
-        parser_revision: 1,
-        analyzer_revision: 1,
-        metrics_schema_revision: 1,
+        parser_revision: revisions.parser_revision,
+        analyzer_revision: revisions.analyzer_revision,
+        metrics_schema_revision: revisions.metrics_schema_revision,
     }
 }
 
@@ -327,7 +323,7 @@ fn evidence_completion(
     EvidenceCompletion {
         claim_fence: claim.claim_fence,
         status,
-        evidence_schema_revision: 1,
+        evidence_schema_revision: crate::analysis::projection_revisions().evidence_schema_revision,
         evidence_json,
     }
 }
@@ -350,15 +346,18 @@ fn seed_ready_evidence_row(store: &Store, session_id: &str) -> SessionRecord {
         .execute(
             "UPDATE session_evidence
                 SET status = 'ready', analyzed_generation = 1,
-                    processed_fingerprint = 'sv1:current', parser_revision = 1,
-                    analyzer_revision = 1, evidence_schema_revision = 1,
+                    processed_fingerprint = 'sv1:current', parser_revision = ?4,
+                    analyzer_revision = ?5, evidence_schema_revision = ?6,
                     evidence_json = '{\"groups\":[]}',
                     retry_count = 0, claim_fence = 4, analyzed_at_epoch = 900
               WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
             params![
                 record.key.environment_key,
                 record.key.agent,
-                record.key.session_id
+                record.key.session_id,
+                crate::analysis::projection_revisions().parser_revision,
+                crate::analysis::projection_revisions().analyzer_revision,
+                crate::analysis::projection_revisions().evidence_schema_revision,
             ],
         )
         .unwrap();
@@ -412,6 +411,7 @@ fn published_evidence_pass(record: &SessionRecord) -> crate::analysis::EvidenceP
         &|| false,
         Some(store),
     );
+    pass.source_fingerprint = record.source_fingerprint.clone();
     pass.analysis.fingerprint = record
         .source_fingerprint
         .clone()
@@ -1702,7 +1702,9 @@ fn publish_projections_round_trips_initial_context_json() {
     let store = store();
     let (record, claim) = claimed_projection(&store, "publish-initial-context", 100, 60);
     let record = AnalysisRecord {
-        initial_context_json: Some(r#"{"sources":[{"name":"CLAUDE.md","tokens":120}]}"#.into()),
+        initial_context_json: Some(
+            r#"{"sources":[{"source":"skill","sourceName":"CLAUDE.md","tokenCount":120}]}"#.into(),
+        ),
         source_summaries_json: None,
         ..record
     };
@@ -2002,10 +2004,12 @@ fn selected_history_reaches_candidates_after_the_first_worker_page() {
                     WHERE s.environment_key = session_evidence.environment_key
                       AND s.agent = session_evidence.agent
                       AND s.session_id = session_evidence.session_id),
-                 parser_revision = ?1, evidence_schema_revision = ?2,
-                 published_fence = 1",
+                  parser_revision = ?1, analyzer_revision = ?2,
+                  evidence_schema_revision = ?3,
+                  published_fence = 1",
                 rusqlite::params![
                     antiburn_local::analysis::PARSER_REVISION,
+                    antiburn_local::analysis::ANALYZER_REVISION,
                     antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION
                 ],
             )

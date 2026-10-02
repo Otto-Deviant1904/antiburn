@@ -921,6 +921,7 @@ mod tests {
                 let _ = wait_for_settle.await;
                 EvidencePass {
                     analysis: SessionAnalysis::unavailable(),
+                    source_fingerprint: None,
                     evidence: None,
                     outcome: PassOutcome::SourceMissing,
                     source_outcomes: Vec::new(),

@@ -1442,6 +1442,7 @@ fn publish_synthetic_source(
         pass.outcome == crate::analysis::PassOutcome::Published,
         "synthetic vendor-native source did not parse"
     );
+    pass.source_fingerprint = Some(fingerprint.to_owned());
     pass.analysis.fingerprint = fingerprint.to_owned();
     pass.analysis.analyzed_generation = claim.source_generation;
     anyhow::ensure!(

@@ -569,14 +569,17 @@ impl Store {
                         AND e.analyzed_generation = s.source_generation
                         AND e.processed_fingerprint IS s.source_fingerprint
                         AND e.parser_revision = ?3
-                        AND e.evidence_schema_revision = ?4
-                        AND e.published_fence IS NOT NULL)),
+                        AND e.analyzer_revision = ?4
+                        AND e.evidence_schema_revision = ?5
+                        AND e.published_fence IS NOT NULL)
+                        AND COALESCE(e.status, '') NOT IN ('failed', 'unsupported')),
                     count(*) FILTER (WHERE a.status = 'idle'
                         AND e.status = 'ready'
                         AND e.analyzed_generation = s.source_generation
                         AND e.processed_fingerprint IS s.source_fingerprint
                         AND e.parser_revision = ?3
-                        AND e.evidence_schema_revision = ?4
+                        AND e.analyzer_revision = ?4
+                        AND e.evidence_schema_revision = ?5
                         AND e.published_fence IS NOT NULL
                         AND s.updated_at_epoch > ?1 - ?2),
                     count(*) FILTER (WHERE a.status = 'idle'
@@ -584,22 +587,27 @@ impl Store {
                         AND e.analyzed_generation = s.source_generation
                         AND e.processed_fingerprint IS s.source_fingerprint
                         AND e.parser_revision = ?3
-                        AND e.evidence_schema_revision = ?4
+                        AND e.analyzer_revision = ?4
+                        AND e.evidence_schema_revision = ?5
                         AND e.published_fence IS NOT NULL
                         AND s.updated_at_epoch <= ?1 - ?2),
-                    count(*) FILTER (WHERE a.status = 'queued'),
-                    count(*) FILTER (WHERE a.status = 'running'
-                        OR (a.status = 'failed' AND a.last_error_category = 'continuing')),
+                    count(*) FILTER (WHERE a.status = 'queued'
+                        AND COALESCE(e.status, '') NOT IN ('failed', 'unsupported')),
+                    count(*) FILTER (WHERE (a.status = 'running'
+                        OR (a.status = 'failed' AND a.last_error_category = 'continuing'))
+                        AND COALESCE(e.status, '') NOT IN ('failed', 'unsupported')),
                     count(*) FILTER (WHERE a.status = 'completed'),
-                    count(*) FILTER (WHERE a.status = 'superseded'),
-                    count(*) FILTER (WHERE a.status = 'failed' AND a.last_error_category <> 'continuing'),
+                    count(*) FILTER (WHERE a.status = 'superseded'
+                        OR (a.status <> 'completed' AND e.status = 'unsupported')),
+                    count(*) FILTER (WHERE (a.status = 'failed' AND a.last_error_category <> 'continuing')
+                        OR (a.status <> 'completed' AND e.status = 'failed')),
                     count(*)
                 FROM burn_check_assessment a
                 JOIN session s USING (environment_key, agent, session_id)
                 LEFT JOIN session_evidence e USING (environment_key, agent, session_id)
                WHERE a.check_id = 'ignored_instructions' AND a.boundary_generation = -2
                  AND a.history_batch_epoch = CAST((
-                     SELECT value FROM setting WHERE key = ?5) AS INTEGER)
+                      SELECT value FROM setting WHERE key = ?6) AS INTEGER)
                   AND EXISTS (
                      SELECT 1 FROM turn_content AS content
                      JOIN turn AS content_turn ON content_turn.rowid = content.turn_rowid
@@ -612,6 +620,7 @@ impl Store {
                     now_epoch,
                     idle_secs.max(0),
                     antiburn_local::analysis::PARSER_REVISION,
+                    antiburn_local::analysis::ANALYZER_REVISION,
                     antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION,
                     HISTORY_BATCH_KEY,
                 ],
@@ -820,12 +829,13 @@ impl Store {
               AND evidence.session_id = s.session_id
               AND evidence.status = 'ready'
               AND evidence.analyzed_generation = s.source_generation
-              AND evidence.processed_fingerprint IS s.source_fingerprint
-              AND evidence.parser_revision = ?2
-              AND evidence.evidence_schema_revision = ?3
-              AND evidence.published_fence IS NOT NULL
-              WHERE s.updated_at_epoch IS NOT NULL
-                AND s.updated_at_epoch <= ?4 - ?5
+               AND evidence.processed_fingerprint IS s.source_fingerprint
+               AND evidence.parser_revision = ?2
+               AND evidence.analyzer_revision = ?3
+               AND evidence.evidence_schema_revision = ?4
+               AND evidence.published_fence IS NOT NULL
+               WHERE s.updated_at_epoch IS NOT NULL
+                 AND s.updated_at_epoch <= ?5 - ?6
                 AND EXISTS (
                     SELECT 1 FROM turn_content AS content
                     JOIN turn AS content_turn ON content_turn.rowid = content.turn_rowid
@@ -842,10 +852,10 @@ impl Store {
                        AND s.updated_at_epoch >= assessment.boundary_at_epoch)
                        OR (assessment.status = 'failed'
                            AND (assessment.last_error_category = 'continuing'
-                                OR assessment.next_attempt_at_epoch <= ?4))
+                                 OR assessment.next_attempt_at_epoch <= ?5))
                      OR assessment.status = 'queued'
                      OR (assessment.status = 'running'
-                         AND assessment.lease_expires_at_epoch <= ?4)
+                          AND assessment.lease_expires_at_epoch <= ?5)
                      OR (assessment.status = 'superseded'
                          AND assessment.last_error_category = 'cancelled')
                      OR (assessment.status = 'superseded'
@@ -855,13 +865,13 @@ impl Store {
                               OR assessment.published_fence IS NOT evidence.published_fence))
                     OR
                      (assessment.boundary_generation IS NULL
-                      AND s.updated_at_epoch >= ?6)
+                       AND s.updated_at_epoch >= ?7)
                       OR (assessment.boundary_generation = -2
                           AND assessment.status IN ('idle', 'queued', 'running'))
                        OR (assessment.boundary_generation = -2
                            AND assessment.status = 'failed'
                            AND (assessment.next_attempt_at_epoch IS NULL
-                                OR assessment.next_attempt_at_epoch <= ?4))
+                                 OR assessment.next_attempt_at_epoch <= ?5))
                        OR (assessment.boundary_generation = -2
                            AND assessment.status IN ('completed', 'superseded')
                            AND s.activity_cursor <> assessment.boundary_activity_cursor
@@ -874,17 +884,17 @@ impl Store {
                                 OR assessment.published_fence IS NOT evidence.published_fence))
                        OR (assessment.status = 'completed'
                            AND assessment.boundary_generation <> -2
-                           AND assessment.evaluator_revision IS NOT ?8)
+                            AND assessment.evaluator_revision IS NOT ?9)
                        OR (assessment.status = 'failed'
                            AND assessment.boundary_generation <> -2
-                           AND assessment.evaluator_revision IS NOT ?8)
+                            AND assessment.evaluator_revision IS NOT ?9)
                )
                 AND (assessment.status IS NULL
                      OR assessment.status <> 'running'
-                     OR assessment.lease_expires_at_epoch <= ?4)
-                AND (assessment.next_attempt_at_epoch IS NULL
-                      OR assessment.next_attempt_at_epoch <= ?4
-                      OR assessment.evaluator_revision IS NOT ?8
+                      OR assessment.lease_expires_at_epoch <= ?5)
+                 AND (assessment.next_attempt_at_epoch IS NULL
+                       OR assessment.next_attempt_at_epoch <= ?5
+                       OR assessment.evaluator_revision IS NOT ?9
                       OR assessment.last_error_category IN
                          ('usage_limit', 'request_limit', 'assessment_page_limit'))
               ORDER BY row_number() OVER (
@@ -893,13 +903,14 @@ impl Store {
                            s.environment_key, s.agent, s.session_id),
                   COALESCE(assessment.boundary_generation = -2, 0),
                   s.environment_key, s.agent, s.session_id
-             LIMIT ?7";
+              LIMIT ?8";
         let mut statement = connection.prepare(sql)?;
         let candidates = statement
             .query_map(
                 rusqlite::params![
                     check_id,
                     antiburn_local::analysis::PARSER_REVISION,
+                    antiburn_local::analysis::ANALYZER_REVISION,
                     antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION,
                     now_epoch,
                     idle_secs.max(0),
@@ -1056,13 +1067,15 @@ impl Store {
                     AND e.analyzed_generation = s.source_generation
                     AND e.processed_fingerprint IS s.source_fingerprint
                     AND e.parser_revision = ?4
-                    AND e.evidence_schema_revision = ?5
+                    AND e.analyzer_revision = ?5
+                    AND e.evidence_schema_revision = ?6
                   WHERE s.environment_key = ?1 AND s.agent = ?2 AND s.session_id = ?3",
                 rusqlite::params![
                     input.key.environment_key,
                     input.key.agent,
                     input.key.session_id,
                     antiburn_local::analysis::PARSER_REVISION,
+                    antiburn_local::analysis::ANALYZER_REVISION,
                     antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION,
                 ],
                 |row| {
@@ -1217,9 +1230,10 @@ impl Store {
                       AND e.status = 'ready'
                       AND e.analyzed_generation = s.source_generation
                       AND e.processed_fingerprint IS s.source_fingerprint
-                      AND e.published_fence = ?6
-                      AND e.parser_revision = ?9
-                      AND e.evidence_schema_revision = ?10
+                       AND e.published_fence = ?6
+                       AND e.parser_revision = ?9
+                       AND e.analyzer_revision = ?16
+                       AND e.evidence_schema_revision = ?10
                     WHERE s.environment_key = ?1 AND s.agent = ?2 AND s.session_id = ?3
                       AND s.incarnation = ?11
                       AND s.source_generation = ?12
@@ -1243,6 +1257,7 @@ impl Store {
                 input.source_fingerprint,
                 input.activity_cursor,
                 idle_secs.max(0),
+                antiburn_local::analysis::ANALYZER_REVISION,
             ],
         )?;
         Ok(updated == 1)
@@ -1271,9 +1286,10 @@ impl Store {
                      AND e.status = 'ready'
                       AND e.analyzed_generation = s.source_generation
                       AND e.processed_fingerprint IS s.source_fingerprint
-                      AND e.published_fence = ?6
-                      AND e.parser_revision = ?14
-                      AND e.evidence_schema_revision = ?15
+                       AND e.published_fence = ?6
+                       AND e.parser_revision = ?14
+                       AND e.analyzer_revision = ?16
+                       AND e.evidence_schema_revision = ?15
                     WHERE s.environment_key = ?1 AND s.agent = ?2 AND s.session_id = ?3
                       AND s.incarnation = ?9 AND s.source_generation = ?10
                       AND s.source_fingerprint IS ?11 AND s.activity_cursor = ?12
@@ -1295,6 +1311,7 @@ impl Store {
                 idle_secs.max(0),
                 antiburn_local::analysis::PARSER_REVISION,
                 antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION,
+                antiburn_local::analysis::ANALYZER_REVISION,
             ],
         )?;
         Ok(updated == 1)
@@ -1330,9 +1347,10 @@ impl Store {
                      AND e.status = 'ready'
                      AND e.analyzed_generation = s.source_generation
                      AND e.processed_fingerprint IS s.source_fingerprint
-                     AND e.published_fence = ?9
-                     AND e.parser_revision = ?15
-                     AND e.evidence_schema_revision = ?16
+                      AND e.published_fence = ?9
+                      AND e.parser_revision = ?15
+                      AND e.analyzer_revision = ?17
+                      AND e.evidence_schema_revision = ?16
                     WHERE s.environment_key = ?1 AND s.agent = ?2 AND s.session_id = ?3
                       AND s.incarnation = ?10 AND s.source_generation = ?11
                       AND s.source_fingerprint IS ?12 AND s.activity_cursor = ?13
@@ -1355,6 +1373,7 @@ impl Store {
                 idle_secs.max(0),
                 antiburn_local::analysis::PARSER_REVISION,
                 antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION,
+                antiburn_local::analysis::ANALYZER_REVISION,
             ],
         )?;
         Ok(updated == 1)
@@ -1400,9 +1419,10 @@ impl Store {
                      AND e.status = 'ready'
                      AND e.analyzed_generation = s.source_generation
                      AND e.processed_fingerprint IS s.source_fingerprint
-                     AND e.published_fence = ?8
-                      AND e.parser_revision = ?15
-                      AND e.evidence_schema_revision = ?16
+                       AND e.published_fence = ?8
+                       AND e.parser_revision = ?15
+                       AND e.analyzer_revision = ?17
+                       AND e.evidence_schema_revision = ?16
                     WHERE s.environment_key = ?1 AND s.agent = ?2 AND s.session_id = ?3
                       AND s.incarnation = ?11 AND s.source_generation = ?12
                       AND s.source_fingerprint IS ?13 AND s.activity_cursor = ?10
@@ -1425,6 +1445,7 @@ impl Store {
                 idle_secs.max(0),
                 antiburn_local::analysis::PARSER_REVISION,
                 antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION,
+                antiburn_local::analysis::ANALYZER_REVISION,
             ],
         )?;
         if updated == 0 {
@@ -1483,9 +1504,10 @@ impl Store {
                      AND e.status = 'ready'
                      AND e.analyzed_generation = s.source_generation
                      AND e.processed_fingerprint IS s.source_fingerprint
-                     AND e.published_fence = ?11
-                     AND e.parser_revision = ?17
-                     AND e.evidence_schema_revision = ?18
+                      AND e.published_fence = ?11
+                      AND e.parser_revision = ?17
+                      AND e.analyzer_revision = ?19
+                      AND e.evidence_schema_revision = ?18
                     WHERE s.environment_key = ?1 AND s.agent = ?2 AND s.session_id = ?3
                       AND s.incarnation = ?12 AND s.source_generation = ?13
                       AND s.source_fingerprint IS ?14 AND s.activity_cursor = ?15
@@ -1510,6 +1532,7 @@ impl Store {
                 idle_secs.max(0),
                 antiburn_local::analysis::PARSER_REVISION,
                 antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION,
+                antiburn_local::analysis::ANALYZER_REVISION,
             ],
         )?;
         Ok(updated == 1)

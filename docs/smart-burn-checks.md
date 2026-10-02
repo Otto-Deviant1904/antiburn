@@ -387,7 +387,7 @@ and a measured shortlist. They do not validate Ignored Instructions accuracy.
 
 ## Ignored Instructions selected-input coverage
 
-Audit date: 2026-09-30.
+Audit date: 2026-10-02.
 
 This matrix records the twelve normalized session fields and their current
 availability to Ignored Instructions. Other Smart Burn Checks can select a
@@ -402,12 +402,12 @@ it does not mean the source format cannot contain it. Page availability is
 reported separately as excluded, unsupported, not observed, or observed, with
 observed, empty, malformed, and truncated counts.
 
-The six accepted formats below have native fixture-to-store-to-selected-query
+The accepted formats below have native fixture-to-store-to-selected-query
 coverage. Claims remain limited to the characterized source shapes and producer
 pins in the session coverage document. All other formats are unavailable to
-this check, even if another local parser reads them. In particular, the
-OpenCode JSONL export, Antigravity Cascade/SQLite, and other Cursor formats have
-no accepted Ignored Instructions characterization.
+this check, even if another local parser reads them. Cursor store and composer
+routes retain user and assistant text but mark native tool fields unavailable,
+so they cannot produce a clean result from incomplete tool evidence.
 
 | `SourceFormat`                 | UserMessage | AssistantMessage | BashCommandInput | BashCommandOutput | FileEditPath | FileEditContent | ReadFilePath | ReadFileOutput | SearchFilesQuery | SearchFilesOutput | OtherToolInput | OtherToolOutput |
 | ------------------------------ | ----------- | ---------------- | ---------------- | ----------------- | ------------ | --------------- | ------------ | -------------- | ---------------- | ----------------- | -------------- | --------------- |
@@ -416,18 +416,18 @@ no accepted Ignored Instructions characterization.
 | `PiV3Jsonl`                    | N           | S                | C                | N                 | S            | N               | S            | N              | C                | N                 | C              | N               |
 | `OpenCodeSqliteV2`             | N           | S                | C                | N                 | S            | N               | S            | N              | C                | N                 | C              | N               |
 | `CursorCliAgentJsonl`          | N           | S                | C                | N                 | S            | N               | S            | N              | C                | N                 | C              | N               |
+| `CursorCliStoreDb`             | N           | S                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
+| `CursorChatStoreDb`            | N           | S                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
+| `CursorIdeComposer`            | N           | S                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
 | `AntigravityBrainJsonl`        | N           | S                | C                | N                 | S            | N               | S            | N              | C                | N                 | C              | N               |
+| `AntigravitySqlite`            | N           | S                | C                | N                 | S            | N               | S            | N              | C                | N                 | C              | N               |
 | `OpenCodeJsonl`                | U           | U                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
 | `OmpV3Jsonl`                   | U           | U                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
 | `CursorJsonl`                  | U           | U                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
-| `CursorCliStoreDb`             | U           | U                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
-| `CursorChatStoreDb`            | U           | U                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
-| `CursorIdeComposer`            | U           | U                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
 | `CursorLegacyChatJson`         | U           | U                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
 | `AntigravityJson`              | U           | U                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
 | `AntigravityCascadeJson`       | U           | U                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
 | `AntigravityWorkspaceChatJson` | U           | U                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
-| `AntigravitySqlite`            | U           | U                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
 | `CopilotCliJsonl`              | U           | U                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
 | `CopilotIdeChatJson`           | U           | U                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
 | `ClineSessionJson`             | U           | U                | U                | U                 | U            | U               | U            | U              | U                | U                 | U              | U               |
@@ -453,7 +453,7 @@ row. Raw request content remains local; selected
 paths, commands, queries, and other eligible tool input form the assessment
 input. Dedicated edit-tool bodies are excluded from Ignored Instructions, while
 inline Bash scripts and patches can be selected as command input.
-Schema migration 63 adds normalized fields. Parser revision 45 refreshes older
+Schema migration 63 adds normalized fields. Parser revision 46 refreshes older
 rows for operation metadata, native field bindings, recorded path context, and
 truncated-request isolation and exact result joins. Metadata uses the existing
 private normalized JSON column.
@@ -665,11 +665,12 @@ Migration 65 adds source-order and recent-order content indexes. Production
 selected-content reads use bounded keyset pages. A cursor stores a revision, a
 hash of the session identity and query inputs, and the last source key, turn
 index, row ID, and part index. The query inputs include the published fence
-scope, source generation, activity cutoff, source positions, parser and evidence
-schema revisions, and selected fields. A change to any of them rejects the
+scope, source generation, activity cutoff, source positions, parser, analyzer,
+and evidence-schema revisions, and selected fields. A change to any of them rejects the
 cursor before content is read. The Store checks that the publication still
-matches the session generation, fingerprint, parser revision, evidence schema,
-and ready status in the same transaction as the page query.
+matches the session generation, verified source fingerprint, parser and analyzer
+revisions, evidence schema, and ready status in the same transaction as the page
+query.
 
 Pages use stable source/turn/row/part order, with a separate reverse order for
 recent activity. The full position distinguishes duplicate source coordinates

@@ -552,12 +552,6 @@ impl AntigravityStreamState {
         };
         if suppress_usage {
             event.usage = Usage::default();
-            if event.role == Role::Assistant {
-                if event.tools.is_empty() {
-                    return;
-                }
-                event.role = Role::Tool;
-            }
         }
         event.model = model_from(value).or_else(|| self.model.clone());
         if event.model.is_some() {
@@ -3931,7 +3925,7 @@ mod tests {
         assert_eq!(usage_events[3].usage.input_tokens, 13);
         assert!(usage_events[3].ts_ms.is_none());
         assert_eq!(session.events[1].usage, Usage::default());
-        assert_eq!(session.events[1].role, Role::Tool);
+        assert_eq!(session.events[1].role, Role::Assistant);
         assert_eq!(session.events[1].tools[0].name, "read_file");
         assert!(session.cache_write_tokens_available);
     }

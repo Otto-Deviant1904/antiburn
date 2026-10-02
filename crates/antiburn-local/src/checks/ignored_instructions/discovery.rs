@@ -39,7 +39,13 @@ impl InstructionAdapter {
             ("opencode", SourceFormat::OpenCodeJsonl | SourceFormat::OpenCodeSqliteV2) => {
                 Some(Self::OpenCode)
             }
-            ("cursor", SourceFormat::CursorCliAgentJsonl) => Some(Self::Cursor),
+            (
+                "cursor",
+                SourceFormat::CursorCliAgentJsonl
+                | SourceFormat::CursorCliStoreDb
+                | SourceFormat::CursorChatStoreDb
+                | SourceFormat::CursorIdeComposer,
+            ) => Some(Self::Cursor),
             (
                 "antigravity",
                 SourceFormat::AntigravityBrainJsonl
@@ -308,9 +314,10 @@ pub async fn discover_current_instructions(
             .await
         }
         InstructionAdapter::Pi => {
+            let agent_home = pi_agent_home(&home);
             add_first_existing(
                 &mut candidates,
-                &home.join(".pi/agent"),
+                &agent_home,
                 &[
                     "AGENTS.override.md",
                     "AGENTS.md",
@@ -323,7 +330,25 @@ pub async fn discover_current_instructions(
             )
             .await;
             for name in ["SYSTEM.md", "APPEND_SYSTEM.md"] {
-                candidates.insert((home.join(".pi/agent").join(name), InstructionScope::Global));
+                candidates.insert((agent_home.join(name), InstructionScope::Global));
+            }
+        }
+        InstructionAdapter::Antigravity => {
+            let gemini_home = gemini_home(&home);
+            for name in [
+                "GEMINI.md",
+                "antigravity-cli/rules",
+                "antigravity-ide/rules",
+                "antigravity/rules",
+            ] {
+                let path = gemini_home.join(name);
+                if path_is_directory(&path).await {
+                    for rule in bounded_markdown_tree(&path, &mut limitations, "md").await {
+                        candidates.insert((rule, InstructionScope::Global));
+                    }
+                } else {
+                    candidates.insert((path, InstructionScope::Global));
+                }
             }
         }
         InstructionAdapter::OpenCode => {
@@ -424,6 +449,34 @@ pub async fn discover_current_instructions(
         limitations: state.limitations,
         scan_complete,
     }
+}
+
+fn pi_agent_home(home: &Path) -> PathBuf {
+    pi_agent_home_in(
+        home,
+        crate::discovery::env_path_when_real_home(home, "PI_AGENT_DIR").as_deref(),
+        crate::discovery::env_path_when_real_home(home, "PI_CODING_AGENT_DIR").as_deref(),
+    )
+}
+
+fn gemini_home(home: &Path) -> PathBuf {
+    gemini_home_in(
+        home,
+        crate::discovery::env_path_when_real_home(home, "GEMINI_HOME").as_deref(),
+    )
+}
+
+fn pi_agent_home_in(home: &Path, legacy: Option<&Path>, current: Option<&Path>) -> PathBuf {
+    current
+        .or(legacy)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| home.join(".pi/agent"))
+}
+
+fn gemini_home_in(home: &Path, configured: Option<&Path>) -> PathBuf {
+    configured
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| home.join(".gemini"))
 }
 
 fn stable_relative_path(path: &Path) -> String {
@@ -974,14 +1027,29 @@ mod tests {
             ("pi", SourceFormat::PiV3Jsonl),
             ("opencode", SourceFormat::OpenCodeSqliteV2),
             ("cursor", SourceFormat::CursorCliAgentJsonl),
+            ("cursor", SourceFormat::CursorCliStoreDb),
+            ("cursor", SourceFormat::CursorChatStoreDb),
+            ("cursor", SourceFormat::CursorIdeComposer),
             ("antigravity", SourceFormat::AntigravityBrainJsonl),
+            ("antigravity", SourceFormat::AntigravitySqlite),
         ];
         for (agent, format) in cases {
             assert!(InstructionAdapter::for_source(agent, format).is_some());
         }
-        assert!(
-            InstructionAdapter::for_source("cursor", SourceFormat::CursorChatStoreDb).is_none()
-        );
+    }
+
+    #[test]
+    fn global_instruction_roots_match_agent_environment_overrides() {
+        let home = Path::new("/home/user");
+        let legacy = Path::new("/custom/pi-legacy");
+        let current = Path::new("/custom/pi-current");
+        let gemini = Path::new("/custom/gemini");
+
+        assert_eq!(pi_agent_home_in(home, Some(legacy), Some(current)), current);
+        assert_eq!(pi_agent_home_in(home, Some(legacy), None), legacy);
+        assert_eq!(pi_agent_home_in(home, None, None), home.join(".pi/agent"));
+        assert_eq!(gemini_home_in(home, Some(gemini)), gemini);
+        assert_eq!(gemini_home_in(home, None), home.join(".gemini"));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use antiburn_local::analysis::{
-    EVIDENCE_SCHEMA_REVISION, FenceScope, PARSER_REVISION, SelectedContentCursor,
-    SelectedContentPage, SelectedContentQueryError, SelectedContentRequest,
+    ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, FenceScope, PARSER_REVISION,
+    SelectedContentCursor, SelectedContentPage, SelectedContentQueryError, SelectedContentRequest,
     query_turn_content_keyset_selected,
 };
 use rusqlite::{OptionalExtension, params};
@@ -53,6 +53,7 @@ impl Store {
             || evidence.analyzed_generation != Some(generation)
             || evidence.processed_fingerprint != fingerprint
             || evidence.parser_revision != Some(PARSER_REVISION)
+            || evidence.analyzer_revision != Some(ANALYZER_REVISION)
             || evidence.evidence_schema_revision != Some(EVIDENCE_SCHEMA_REVISION)
             || request.source_generation != generation
         {

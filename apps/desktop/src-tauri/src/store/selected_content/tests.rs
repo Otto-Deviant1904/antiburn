@@ -17,10 +17,14 @@ fn fixture() -> (Store, SessionKey) {
         ).unwrap();
         conn.execute(
             "INSERT INTO session_evidence (environment_key, agent, session_id, status,
-                analyzed_generation, processed_fingerprint, parser_revision,
+                analyzed_generation, processed_fingerprint, parser_revision, analyzer_revision,
                 evidence_schema_revision, published_fence, claim_fence)
-             VALUES ('native', 'claude-code', 'keyset', 'ready', 7, 'source', ?1, ?2, 11, 11)",
-            params![PARSER_REVISION, EVIDENCE_SCHEMA_REVISION],
+             VALUES ('native', 'claude-code', 'keyset', 'ready', 7, 'source', ?1, ?2, ?3, 11, 11)",
+            params![
+                PARSER_REVISION,
+                antiburn_local::analysis::ANALYZER_REVISION,
+                EVIDENCE_SCHEMA_REVISION
+            ],
         )
         .unwrap();
         for source in ["a", "b"] {
