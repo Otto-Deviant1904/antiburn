@@ -1,16 +1,16 @@
 use std::sync::Arc;
 
 use antiburn_local::analysis::{
-    query_turn_content, reader_for, CompositeSink, EvidenceCoverage, EvidenceSource, EvidenceValue,
-    FenceScope, MemoryTurnRowStore, RawSource, SessionEvidence, SessionEvidenceAccumulator,
-    SessionInput, SessionMetricsAccumulator, SourceFormat, SourceKind, ToolCategory, ToolClass,
-    TurnRowSink, TurnRowStore, TurnSessionKey,
+    CompositeSink, EvidenceCoverage, EvidenceSource, EvidenceValue, FenceScope, MemoryTurnRowStore,
+    RawSource, SessionEvidence, SessionEvidenceAccumulator, SessionInput,
+    SessionMetricsAccumulator, SourceFormat, SourceKind, ToolCategory, ToolClass, TurnRowSink,
+    TurnRowStore, TurnSessionKey, query_turn_content, reader_for,
 };
 use antiburn_local::insights::{
     CoverageCounts, DetectorCounts, DetectorId, EfficiencyReportAccumulator, ModelRegistry,
     ModelReplacementEntry, ReportCatalogs, ReportContext, ReportWindow,
 };
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 fn input(source: RawSource) -> SessionInput {
     let source_format = match &source {
@@ -273,10 +273,12 @@ fn sqlite_companion_retains_assistant_content_without_double_counting_usage() {
     let content = store.with_connection(|connection| {
         query_turn_content(connection, &key, &FenceScope::single(1)).unwrap()
     });
-    assert!(content
-        .parts
-        .iter()
-        .any(|part| part.part.text == "companion assistant content"));
+    assert!(
+        content
+            .parts
+            .iter()
+            .any(|part| part.part.text == "companion assistant content")
+    );
 }
 
 #[test]
@@ -328,18 +330,24 @@ fn cascade_transcript_preserves_thinking_and_nested_tool_calls() {
     let content = store.with_connection(|connection| {
         query_turn_content(connection, &key, &FenceScope::single(1)).unwrap()
     });
-    assert!(content
-        .parts
-        .iter()
-        .any(|part| part.part.text == "cascade-user-response"));
-    assert!(content
-        .parts
-        .iter()
-        .any(|part| part.part.text == "cascade-user-item"));
-    assert!(content
-        .parts
-        .iter()
-        .any(|part| part.part.text == "cascade-assistant-text"));
+    assert!(
+        content
+            .parts
+            .iter()
+            .any(|part| part.part.text == "cascade-user-response")
+    );
+    assert!(
+        content
+            .parts
+            .iter()
+            .any(|part| part.part.text == "cascade-user-item")
+    );
+    assert!(
+        content
+            .parts
+            .iter()
+            .any(|part| part.part.text == "cascade-assistant-text")
+    );
 }
 
 #[test]
@@ -390,10 +398,12 @@ fn resource_tool_calls_remain_unclassified_without_resource_metadata() {
     };
 
     assert_eq!(tools.by_name.len(), 5);
-    assert!(tools
-        .by_name
-        .values()
-        .all(|tool| tool.calls == 1 && tool.class == ToolClass::Unclassified));
+    assert!(
+        tools
+            .by_name
+            .values()
+            .all(|tool| tool.calls == 1 && tool.class == ToolClass::Unclassified)
+    );
 }
 
 #[test]
@@ -418,23 +428,31 @@ fn antigravity_brain_content_reaches_the_shared_private_turn_content_path() {
     let content = store.with_connection(|connection| {
         query_turn_content(connection, &key, &FenceScope::single(1)).unwrap()
     });
-    assert!(content
-        .parts
-        .iter()
-        .any(|part| part.part.text == "ANTIGRAVITY-USER"));
-    assert!(content
-        .parts
-        .iter()
-        .any(|part| part.part.text.contains("focused tests passed")));
-    assert!(content
-        .parts
-        .iter()
-        .any(|part| part.part.kind.as_str() == "tool_input"));
+    assert!(
+        content
+            .parts
+            .iter()
+            .any(|part| part.part.text == "ANTIGRAVITY-USER")
+    );
+    assert!(
+        content
+            .parts
+            .iter()
+            .any(|part| part.part.text.contains("focused tests passed"))
+    );
+    assert!(
+        content
+            .parts
+            .iter()
+            .any(|part| part.part.kind.as_str() == "tool_input")
+    );
     assert!(content.parts.iter().all(|part| {
         part.part.text != "test result: ok" || part.part.kind.as_str() != "user_text"
     }));
-    assert!(content
-        .parts
-        .iter()
-        .any(|part| part.part.kind.as_str() == "thinking"));
+    assert!(
+        content
+            .parts
+            .iter()
+            .any(|part| part.part.kind.as_str() == "thinking")
+    );
 }
