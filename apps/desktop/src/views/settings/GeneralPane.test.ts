@@ -57,29 +57,37 @@ function history(overrides: Partial<ScanHistoryProgress>): ScanHistoryProgress {
 
 describe("historyScanSummary", () => {
   it("says nothing when there is no status, or retention keeps only the current window", () => {
-    expect(historyScanSummary(undefined)).toBe("")
-    expect(historyScanSummary(history({ state: "none" }))).toBe("")
+    expect(historyScanSummary(undefined, false)).toBe("")
+    expect(historyScanSummary(history({ state: "none" }), false)).toBe("")
   })
 
   it("tells a waiting reader the historical pass has not started yet", () => {
-    expect(historyScanSummary(history({ state: "pending" }))).toBe(
+    expect(historyScanSummary(history({ state: "pending" }), false)).toBe(
       " It will also read your full history once the current scan is caught up.",
     )
   })
 
-  it("reports what the historical pass has found and read so far, singular and plural", () => {
-    expect(historyScanSummary(history({ state: "running", total: 1, completed: 0 }))).toBe(
-      " It has also found 1 older session so far, 0 read.",
-    )
-    expect(historyScanSummary(history({ state: "running", total: 40, completed: 12 }))).toBe(
-      " It has also found 40 older sessions so far, 12 read.",
+  it("tells a reader with monitoring paused how the historical pass can start", () => {
+    expect(historyScanSummary(history({ state: "pending" }), true)).toBe(
+      " It will read your full history when monitoring resumes, or when you scan now.",
     )
   })
 
+  it("reports what the historical pass has found and processed so far, singular and plural", () => {
+    expect(
+      historyScanSummary(history({ state: "running", total: 1, completed: 0 }), false),
+    ).toBe(" It has also found 1 older session so far, 0 processed.")
+    expect(
+      historyScanSummary(history({ state: "running", total: 40, completed: 12 }), false),
+    ).toBe(" It has also found 40 older sessions so far, 12 processed.")
+  })
+
   it("reports the final count once done, or nothing when there was no history to find", () => {
-    expect(historyScanSummary(history({ state: "done", total: 40, completed: 40 }))).toBe(
-      " It has also read 40 older sessions.",
+    expect(
+      historyScanSummary(history({ state: "done", total: 40, completed: 40 }), false),
+    ).toBe(" It has also processed 40 older sessions.")
+    expect(historyScanSummary(history({ state: "done", total: 0, completed: 0 }), false)).toBe(
+      "",
     )
-    expect(historyScanSummary(history({ state: "done", total: 0, completed: 0 }))).toBe("")
   })
 })

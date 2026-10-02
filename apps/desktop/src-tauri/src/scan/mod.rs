@@ -334,6 +334,11 @@ pub struct ScanController {
     /// When [`history::push_progress`] last emitted its event, for the
     /// roughly-one-per-second throttle.
     history_last_emit: Mutex<Option<Instant>>,
+    /// The retention for which this launch already asked for the automatic
+    /// historical pass. A failed or cancelled pass does not ask again until
+    /// the next launch, so a lasting failure cannot repeat it after every
+    /// pass, and a cancel holds. The reader's own Historical scan ignores it.
+    history_auto_requested_for: Mutex<Option<i32>>,
 }
 
 impl ScanController {
@@ -449,6 +454,28 @@ impl ScanController {
     /// pass's finish leaves this set.
     pub(crate) fn mark_current_pass_done(&self) {
         self.first_current_pass_done.store(true, Ordering::SeqCst);
+    }
+
+    /// Claims this launch's one automatic historical request for
+    /// `retention_days`. True the first time for each retention.
+    pub(crate) fn claim_history_auto_request(&self, retention_days: i32) -> bool {
+        let mut requested = self
+            .history_auto_requested_for
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *requested == Some(retention_days) {
+            return false;
+        }
+        *requested = Some(retention_days);
+        true
+    }
+
+    /// Lets the automatic historical pass ask again, for a fresh index.
+    pub(crate) fn reset_history_auto_request(&self) {
+        *self
+            .history_auto_requested_for
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     }
 
     /// Whether [`history::push_progress`] may emit now, under the

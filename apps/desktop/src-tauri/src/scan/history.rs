@@ -122,7 +122,9 @@ pub(crate) fn push_progress(app: &AppHandle, pass_running: bool, force: bool) {
 /// done for this retention.
 ///
 /// Safe to call repeatedly: once the completion marker matches the live
-/// retention, every later call is a no-op.
+/// retention, every later call is a no-op. It asks at most once for each
+/// retention in a launch, so a failed or cancelled pass waits for the next
+/// launch or the reader's own Historical scan.
 pub(crate) fn maybe_start_automatic_pass(app: &AppHandle) {
     let controller = app.state::<ScanController>();
     if !controller.first_current_pass_done() {
@@ -137,6 +139,9 @@ pub(crate) fn maybe_start_automatic_pass(app: &AppHandle) {
         return;
     }
     if done_for_current_retention(&store, retention_days) {
+        return;
+    }
+    if !controller.claim_history_auto_request(retention_days) {
         return;
     }
     controller.request(ScanTrigger::HistoricalScan);
@@ -163,6 +168,17 @@ mod tests {
             None
         );
         assert_eq!(window_secs(1, 1_000), None);
+    }
+
+    #[test]
+    fn the_automatic_request_is_claimed_once_per_retention_until_reset() {
+        let controller = ScanController::default();
+        assert!(controller.claim_history_auto_request(90));
+        assert!(!controller.claim_history_auto_request(90));
+        // A widened retention asks again.
+        assert!(controller.claim_history_auto_request(RETAIN_SESSION_DATA_FOREVER));
+        controller.reset_history_auto_request();
+        assert!(controller.claim_history_auto_request(RETAIN_SESSION_DATA_FOREVER));
     }
 
     #[test]

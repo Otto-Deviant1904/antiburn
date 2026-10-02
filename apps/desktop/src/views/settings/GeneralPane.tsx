@@ -58,20 +58,28 @@ export function scanSummary(status: ScanStatus | null): string {
 /**
  * What the historical pass has found beyond the current window, under the
  * retention setting. Empty when there is nothing to say: either retention
- * keeps only the current window, or no status has arrived yet.
+ * keeps only the current window, or no status has arrived yet. `completed`
+ * also counts sessions that failed or were unsupported, so the copy says
+ * "processed", not "read". While monitoring is paused, a pending pass waits
+ * for monitoring to resume.
  */
-export function historyScanSummary(history: ScanHistoryProgress | undefined): string {
+export function historyScanSummary(
+  history: ScanHistoryProgress | undefined,
+  monitoringPaused: boolean,
+): string {
   if (!history) return ""
   switch (history.state) {
     case "none":
       return ""
     case "pending":
-      return " It will also read your full history once the current scan is caught up."
+      return monitoringPaused
+        ? " It will read your full history when monitoring resumes, or when you scan now."
+        : " It will also read your full history once the current scan is caught up."
     case "running":
-      return ` It has also found ${history.total} older session${history.total === 1 ? "" : "s"} so far, ${history.completed} read.`
+      return ` It has also found ${history.total} older session${history.total === 1 ? "" : "s"} so far, ${history.completed} processed.`
     case "done":
       return history.total > 0
-        ? ` It has also read ${history.total} older session${history.total === 1 ? "" : "s"}.`
+        ? ` It has also processed ${history.total} older session${history.total === 1 ? "" : "s"}.`
         : ""
   }
 }
@@ -151,7 +159,7 @@ export function GeneralPane({ settings, update, info, loaded }: GeneralPaneProps
             searchId="historicalScan"
             description={`Read every session file antiburn can find on this machine, from the start. ${scanSummary(
               scanStatus,
-            )}${historyScanSummary(scanStatus?.history)}`}
+            )}${historyScanSummary(scanStatus?.history, settings.discoveryPaused)}`}
             trailing={
               running ? (
                 <PushButton onClick={() => void handleCancel()}>Stop</PushButton>

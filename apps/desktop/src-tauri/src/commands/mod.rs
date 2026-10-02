@@ -2488,6 +2488,7 @@ pub async fn clear_local_index(app: tauri::AppHandle) -> CommandResult<usize> {
     // A fresh index has not earned its historical pass yet, even under a
     // retention that already covered the one this just dropped.
     crate::scan::history::reset_done(&app.state::<Store>());
+    app.state::<ScanController>().reset_history_auto_request();
     // Report the broad removal and list invalidation before requesting index refill.
     crate::session_lifecycle::report(
         &app,
