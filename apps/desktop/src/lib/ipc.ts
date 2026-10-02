@@ -344,6 +344,11 @@ export type Interaction =
   | { kind: "burnCheckPromptPrepared"; outcome: PromptPreparationAnalyticsOutcome }
   | { kind: "burnCheckPromptCopied" }
   | {
+      kind: "ignoredInstructionObserved"
+      stage: "finding" | "evidence" | "prompt"
+      outcome: "visible" | "available" | "unavailable" | "failed" | "copied"
+    }
+  | {
       kind: "burnCheckOutcomeObserved"
       outcome: "verified" | "recurred"
       origin: "passive" | "action"

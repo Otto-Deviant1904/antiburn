@@ -280,6 +280,7 @@ async fn run_worker(app: tauri::AppHandle) {
     // The worker reports a typed fact only. The projection worker
     // rebuilds the rich row and emits the frontend events.
     let announce = move |key: &SessionKey| {
+        crate::jev_worker::wake(&announce_app);
         crate::session_lifecycle::report(
             &announce_app,
             crate::session_lifecycle::SyncObservation::RowChanged {
@@ -293,7 +294,11 @@ async fn run_worker(app: tauri::AppHandle) {
         );
     };
     let report_app = app.clone();
-    let announce_idle = move || {
+    let report_changed = move || {
+        ::tracing::debug!(
+            event = "checks_report_changed_emitted",
+            source = "insights_worker_batch"
+        );
         let _ = report_app.emit(commands::CHECKS_REPORT_CHANGED_EVENT, ());
     };
     let backlog_app = app.clone();
@@ -311,7 +316,7 @@ async fn run_worker(app: tauri::AppHandle) {
     let store = app.state::<Store>();
     let handle = app.state::<WorkerHandle>();
     let signals = WorkerLoopSignals {
-        idle: &announce_idle,
+        report_changed: &report_changed,
         backlog: &announce_backlog,
     };
     worker_loop(
@@ -347,7 +352,10 @@ pub(crate) fn backoff_secs(retry_count: i64) -> i64 {
 fn published_status(evidence: &SessionEvidence) -> PublishedEvidence {
     let supported = DetectorId::ALL
         .into_iter()
-        .any(|detector| eligible(detector, evidence));
+        .any(|detector| eligible(detector, evidence))
+        || antiburn_local::analysis::ignored_instructions::source_supported(
+            evidence.capabilities.source_format,
+        );
     if supported {
         PublishedEvidence::Ready
     } else {
@@ -423,12 +431,14 @@ pub(crate) fn apply_outcome(
                 .evidence(&claim.key)?
                 .and_then(|row| row.evidence_json)
                 .and_then(|json| serde_json::from_str::<SessionEvidence>(&json).ok());
-            let applied = store.publish_projections(
+            let verified_source_fingerprint = pass.source_fingerprint.as_deref();
+            let applied = store.publish_projections_with_source_fingerprint(
                 &record,
                 pass.analysis.started_at_epoch,
                 &completion,
                 &relations,
                 &pass.source_outcomes,
+                verified_source_fingerprint,
             )?;
             let ingested = applied
                 .then(|| {
@@ -647,12 +657,9 @@ pub(crate) async fn process_next_work(
     Ok(false)
 }
 
-/// `worker_loop`'s two report-only signals to the app layer: `checks:
-/// report-changed` on every settle, and the pool-wide backlog start/drain.
-/// Bundled into one parameter so adding the backlog signal did not tip the
-/// loop over clippy's argument-count limit.
+/// Report refresh and pool-wide backlog signals.
 pub(crate) struct WorkerLoopSignals<'a> {
-    pub idle: &'a (dyn Fn() + Send + Sync),
+    pub report_changed: &'a (dyn Fn() + Send + Sync),
     pub backlog: &'a (dyn Fn(bool) + Send + Sync),
 }
 
@@ -665,8 +672,8 @@ pub(crate) async fn worker_loop(
     signals: &WorkerLoopSignals<'_>,
     report_ingested: &(dyn Fn(AgentKind, IngestedIncidents) + Send + Sync),
 ) {
-    let mut processed = false;
     let busy = AtomicBool::new(false);
+    let mut report_dirty = false;
     // Fires as soon as `process_next_work` claims a unit of work, before it
     // runs that work. Guarded so the pool-wide busy count only counts this
     // worker's idle-to-busy edge once per stretch, the same guard the old
@@ -693,8 +700,7 @@ pub(crate) async fn worker_loop(
         {
             Ok(true) => {
                 handle.note_backlog_processed();
-                processed = true;
-                (signals.idle)();
+                report_dirty = true;
                 continue;
             }
             Ok(false) => {
@@ -708,9 +714,9 @@ pub(crate) async fn worker_loop(
                     );
                     (signals.backlog)(false);
                 }
-                if processed {
-                    processed = false;
-                    (signals.idle)();
+                if report_dirty {
+                    report_dirty = false;
+                    (signals.report_changed)();
                 }
                 tokio::select! {
                     () = handle.wake.notified() => {}
@@ -718,6 +724,10 @@ pub(crate) async fn worker_loop(
                 }
             }
             Err(error) => {
+                if report_dirty {
+                    report_dirty = false;
+                    (signals.report_changed)();
+                }
                 if busy.swap(false, Ordering::SeqCst)
                     && let Some((drained, elapsed_ms)) = handle.note_backlog_idle()
                 {
