@@ -551,7 +551,7 @@ impl AntigravityStreamState {
             return;
         };
         let mut skip_event = false;
-        let mut content_role = event.role;
+        let content_role = event.role;
         if suppress_usage {
             event.usage = Usage::default();
             if event.role == Role::Assistant {
@@ -559,7 +559,6 @@ impl AntigravityStreamState {
                     skip_event = true;
                 } else {
                     event.role = Role::Tool;
-                    content_role = Role::Tool;
                 }
             }
         }
