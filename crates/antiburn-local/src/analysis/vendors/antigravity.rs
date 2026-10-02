@@ -550,13 +550,17 @@ impl AntigravityStreamState {
         let Some(mut event) = step_to_event(value) else {
             return;
         };
+        let mut skip_event = false;
+        let mut content_role = event.role;
         if suppress_usage {
             event.usage = Usage::default();
             if event.role == Role::Assistant {
                 if event.tools.is_empty() {
-                    return;
+                    skip_event = true;
+                } else {
+                    event.role = Role::Tool;
+                    content_role = Role::Tool;
                 }
-                event.role = Role::Tool;
             }
         }
         event.model = model_from(value).or_else(|| self.model.clone());
@@ -568,7 +572,7 @@ impl AntigravityStreamState {
         if self.started_at_ms.is_none() {
             self.started_at_ms = event.ts_ms;
         }
-        let mut content = step_content_parts(value, event.role);
+        let mut content = step_content_parts(value, content_role);
         if value
             .get("truncated_fields")
             .and_then(Value::as_array)
@@ -581,7 +585,9 @@ impl AntigravityStreamState {
                 }
             }
         }
-        sink.record(NormalizedRecord::MetricsEvent(Box::new(event)));
+        if !skip_event {
+            sink.record(NormalizedRecord::MetricsEvent(Box::new(event)));
+        }
         if !content.is_empty() {
             sink.record(NormalizedRecord::TurnContent(Box::new(TurnContent {
                 parts: content,
