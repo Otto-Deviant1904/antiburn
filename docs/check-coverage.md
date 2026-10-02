@@ -236,7 +236,8 @@ Tool results do not create candidate work. Pages interleave rules from each inst
 source so a large global file cannot starve project rules. All six
 first-tier agents include shared global and project AGENTS.md files alongside
 their supported agent-specific sources. The Markdown reader uses headings and
-list structure to bound rule text; it does not infer semantic rule types from
+list structure to bound rule text. Text before the first heading scopes each
+headed rule but does not become a separate rule. It does not infer semantic rule types from
 keyword lists. Jev answers applicability, the action's relationship after the
 instruction's stated conditions and exceptions, whether omitted evidence could
 change that conclusion, and whether a completion-bound obligation lacks a

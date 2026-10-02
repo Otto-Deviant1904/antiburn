@@ -65,6 +65,9 @@ rule sections instead of becoming a separate requirement. The section line
 ranges keep their original file line numbers. Agent adapters retain any
 frontmatter-derived conditional scope, such as a Claude `paths` rule; the
 frontmatter text remains visible to Jev with the instruction it scopes.
+Text before the first Markdown heading is also retained as document context and
+attached to each headed rule. It does not become a separate rule. Changing that
+context changes the derived section identity and assessment revision.
 
 Instruction-source adapters use these current file contracts: Claude loads
 project/user `CLAUDE.md`, local variants, `.claude/rules/*.md`, and bounded local

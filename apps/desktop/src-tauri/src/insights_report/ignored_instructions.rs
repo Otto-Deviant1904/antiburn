@@ -74,9 +74,17 @@ pub(crate) fn ignored_instruction_session_statuses(
     keys: &[crate::store::SessionKey],
 ) -> Result<Vec<crate::dto::IgnoredInstructionSessionStatus>> {
     let connection = open_read_only(data_dir, REPORT_BUSY_TIMEOUT)?;
+    ignored_instruction_session_statuses_in(&connection, keys)
+}
+
+fn ignored_instruction_session_statuses_in(
+    connection: &rusqlite::Connection,
+    keys: &[crate::store::SessionKey],
+) -> Result<Vec<crate::dto::IgnoredInstructionSessionStatus>> {
     let sql = "SELECT e.evidence_json, s.incarnation, s.source_generation,
                 s.source_fingerprint, e.published_fence, e.status,
                  (e.analyzed_generation = s.source_generation
+                  AND e.processed_fingerprint IS s.source_fingerprint
                   AND e.parser_revision = ?4 AND e.analyzer_revision = ?5
                   AND e.evidence_schema_revision = ?6),
                  EXISTS (
@@ -87,16 +95,21 @@ pub(crate) fn ignored_instruction_session_statuses(
                        AND content_turn.session_id = s.session_id
                        AND content.kind <> 'thinking' AND length(content.content) > 0
                   ),
-                  (SELECT a.status FROM burn_check_assessment a
-                    WHERE a.environment_key = s.environment_key AND a.agent = s.agent
-                      AND a.session_id = s.session_id AND a.check_id = 'ignored_instructions')
-           FROM session s LEFT JOIN session_evidence e
-             ON e.environment_key = s.environment_key AND e.agent = s.agent
-            AND e.session_id = s.session_id
-          WHERE s.environment_key = ?1 AND s.agent = ?2 AND s.session_id = ?3
-             AND EXISTS (SELECT 1 FROM setting WHERE key = 'internal:burnChecksEnabledAtEpochV1')"
+                   a.status, a.last_error_category, a.incarnation,
+                   a.source_generation, a.source_fingerprint, a.published_fence,
+                   a.evaluator_revision
+            FROM session s LEFT JOIN session_evidence e
+              ON e.environment_key = s.environment_key AND e.agent = s.agent
+             AND e.session_id = s.session_id
+            LEFT JOIN burn_check_assessment a
+              ON a.environment_key = s.environment_key AND a.agent = s.agent
+             AND a.session_id = s.session_id AND a.check_id = 'ignored_instructions'
+           WHERE s.environment_key = ?1 AND s.agent = ?2 AND s.session_id = ?3
+              AND EXISTS (SELECT 1 FROM setting WHERE key = 'internal:burnChecksEnabledAtEpochV1')"
         .to_owned();
     let mut statement = connection.prepare(&sql)?;
+    let current_evaluator_revision =
+        antiburn_local::analysis::ignored_instructions::evaluator_revision();
     keys.iter()
         .map(|key| {
             let row = statement
@@ -120,6 +133,12 @@ pub(crate) fn ignored_instruction_session_statuses(
                             row.get::<_, Option<bool>>(6)?,
                             row.get::<_, bool>(7)?,
                             row.get::<_, Option<String>>(8)?,
+                            row.get::<_, Option<String>>(9)?,
+                            row.get::<_, Option<u64>>(10)?,
+                            row.get::<_, Option<i64>>(11)?,
+                            row.get::<_, Option<String>>(12)?,
+                            row.get::<_, Option<i64>>(13)?,
+                            row.get::<_, Option<String>>(14)?,
                         ))
                     },
                 )
@@ -134,6 +153,12 @@ pub(crate) fn ignored_instruction_session_statuses(
                 current,
                 has_content,
                 assessment_status,
+                assessment_error_category,
+                assessment_incarnation,
+                assessment_generation,
+                assessment_fingerprint,
+                assessment_fence,
+                assessment_evaluator_revision,
             )) = row
             else {
                 return Ok(ignored_session_status(
@@ -183,8 +208,28 @@ pub(crate) fn ignored_instruction_session_statuses(
                     Some("Could not read complete session evidence."),
                 ));
             };
+            let current_assessment = assessment_incarnation == Some(incarnation)
+                && assessment_generation == Some(generation)
+                && assessment_fingerprint == fingerprint
+                && assessment_fence == Some(fence)
+                && assessment_evaluator_revision.as_deref()
+                    == Some(current_evaluator_revision.as_str());
+            if current_assessment && assessment_status.as_deref() == Some("failed") {
+                if assessment_error_category.as_deref() == Some("continuing") {
+                    return Ok(ignored_session_status(
+                        crate::dto::SessionHygieneStatus::Checking,
+                        Some("An instruction assessment is continuing."),
+                    ));
+                }
+                return Ok(ignored_session_status(
+                    crate::dto::SessionHygieneStatus::CouldntCheck,
+                    Some(ignored_assessment_failure_reason(
+                        assessment_error_category.as_deref(),
+                    )),
+                ));
+            }
             let result = ignored_instruction_result_for(
-                &connection,
+                connection,
                 &evidence,
                 IgnoredInstructionSessionIdentity {
                     environment_key: &key.environment_key,
@@ -237,6 +282,32 @@ pub(crate) fn ignored_instruction_session_statuses(
             }
         })
         .collect()
+}
+
+fn ignored_assessment_failure_reason(category: Option<&str>) -> &'static str {
+    match category {
+        Some("authentication_rejected") => "The provider rejected the API key.",
+        Some("rate_limited") => "The provider rate limit interrupted the assessment.",
+        Some("usage_limit") => "The configured usage limit interrupted the assessment.",
+        Some("provider_overloaded" | "provider_unavailable") => {
+            "The provider was unavailable for the assessment."
+        }
+        Some("outcome_unknown") => "The provider did not confirm the request outcome.",
+        Some("unsupported_format") => "This session source format is not supported.",
+        Some("evidence_unavailable") => "Current session evidence is unavailable.",
+        Some("cancelled") => "The instruction assessment was cancelled.",
+        Some(
+            "invalid_request_schema"
+            | "invalid_request"
+            | "invalid_response"
+            | "response_too_large"
+            | "response_decode"
+            | "response_usage_exceeded"
+            | "invalid_assessment_plan"
+            | "progress_storage_failed",
+        ) => "The instruction assessment could not be completed.",
+        _ => "The instruction assessment failed.",
+    }
 }
 
 fn ignored_session_status(
@@ -513,6 +584,79 @@ mod tests {
         }
     }
 
+    fn session_status_connection() -> rusqlite::Connection {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE session (
+                    environment_key TEXT, agent TEXT, session_id TEXT,
+                    incarnation INTEGER, source_generation INTEGER, source_fingerprint TEXT);
+                 CREATE TABLE session_evidence (
+                    environment_key TEXT, agent TEXT, session_id TEXT, evidence_json TEXT,
+                    published_fence INTEGER, status TEXT, analyzed_generation INTEGER,
+                    processed_fingerprint TEXT, parser_revision INTEGER,
+                    analyzer_revision INTEGER, evidence_schema_revision INTEGER);
+                 CREATE TABLE turn (rowid INTEGER PRIMARY KEY, environment_key TEXT,
+                    agent TEXT, session_id TEXT);
+                 CREATE TABLE turn_content (turn_rowid INTEGER, kind TEXT, content TEXT);
+                 CREATE TABLE setting (key TEXT);
+                 CREATE TABLE burn_check_assessment (
+                    environment_key TEXT, agent TEXT, session_id TEXT, check_id TEXT,
+                    status TEXT, last_error_category TEXT, incarnation INTEGER,
+                    source_generation INTEGER, source_fingerprint TEXT,
+                    published_fence INTEGER, evaluator_revision TEXT,
+                    input_revision TEXT, result_revision TEXT, result_json TEXT);
+                 INSERT INTO session VALUES ('native', 'claude-code', 'failed', 1, 3, 'fp');
+                 INSERT INTO turn VALUES (1, 'native', 'claude-code', 'failed');
+                 INSERT INTO turn_content VALUES (1, 'assistant_text', 'Saved assistant text.');
+                 INSERT INTO setting VALUES ('internal:burnChecksEnabledAtEpochV1');",
+            )
+            .unwrap();
+        let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
+            agent: "claude-code".into(),
+            session_id: "failed".into(),
+            kind: SourceKind::File,
+            capabilities: SourceCapabilities::claude(),
+        })
+        .evidence(&TurnFacts::default());
+        connection
+            .execute(
+                "INSERT INTO session_evidence VALUES
+                 ('native', 'claude-code', 'failed', ?1, 4, 'ready', 3, 'fp', ?2, ?3, ?4)",
+                params![
+                    serde_json::to_string(&evidence).unwrap(),
+                    PARSER_REVISION,
+                    ANALYZER_REVISION,
+                    EVIDENCE_SCHEMA_REVISION
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO burn_check_assessment VALUES
+                 ('native', 'claude-code', 'failed', 'ignored_instructions',
+                  'failed', 'authentication_rejected', 1, 3, 'fp', 4, ?1,
+                  'input', NULL, NULL)",
+                [antiburn_local::analysis::ignored_instructions::evaluator_revision()],
+            )
+            .unwrap();
+        connection
+    }
+
+    fn session_status(
+        connection: &rusqlite::Connection,
+    ) -> crate::dto::IgnoredInstructionSessionStatus {
+        ignored_instruction_session_statuses_in(
+            connection,
+            &[crate::store::SessionKey::new(
+                "native",
+                "claude-code",
+                "failed",
+            )],
+        )
+        .unwrap()[0]
+    }
+
     #[test]
     fn sampled_no_finding_is_ordinary_clean_after_the_bounded_pass() {
         let result = result();
@@ -536,6 +680,110 @@ mod tests {
         result.unassessed_comparisons.clear();
         result.coverage.selector_revision = 0;
         assert!(!ignored_result_has_scoped_no_issues(&result, &[]));
+    }
+
+    #[test]
+    fn current_failed_assessments_show_bounded_reasons_and_continuations_stay_checking() {
+        let connection = session_status_connection();
+        let failed = session_status(&connection);
+        assert_eq!(
+            failed.status,
+            crate::dto::SessionHygieneStatus::CouldntCheck
+        );
+        assert_eq!(failed.reason, Some("The provider rejected the API key."));
+
+        connection
+            .execute(
+                "UPDATE burn_check_assessment SET last_error_category = 'continuing',
+                    input_revision = 'input', result_revision = 'input', result_json = ?1",
+                [serde_json::to_string(&result()).unwrap()],
+            )
+            .unwrap();
+        let continuing = session_status(&connection);
+        assert_eq!(
+            continuing.status,
+            crate::dto::SessionHygieneStatus::Checking
+        );
+        assert_eq!(
+            continuing.reason,
+            Some("An instruction assessment is continuing.")
+        );
+
+        connection
+            .execute(
+                "UPDATE burn_check_assessment SET last_error_category = 'provider_unavailable'",
+                [],
+            )
+            .unwrap();
+        let provider_failed = session_status(&connection);
+        assert_eq!(
+            provider_failed.status,
+            crate::dto::SessionHygieneStatus::CouldntCheck
+        );
+        assert_eq!(
+            provider_failed.reason,
+            Some("The provider was unavailable for the assessment.")
+        );
+
+        connection
+            .execute("UPDATE burn_check_assessment SET source_generation = 2", [])
+            .unwrap();
+        let stale = session_status(&connection);
+        assert_eq!(stale.status, crate::dto::SessionHygieneStatus::Checking);
+        assert_eq!(
+            stale.reason,
+            Some("Waiting for a current instruction assessment.")
+        );
+
+        connection
+            .execute(
+                "UPDATE burn_check_assessment SET source_generation = 3,
+                    last_error_category = 'unrecognized_failure'",
+                [],
+            )
+            .unwrap();
+        let unknown_failure = session_status(&connection);
+        assert_eq!(
+            unknown_failure.status,
+            crate::dto::SessionHygieneStatus::CouldntCheck
+        );
+        assert_eq!(
+            unknown_failure.reason,
+            Some("The instruction assessment failed.")
+        );
+
+        for stale_field in [
+            "source_fingerprint = 'old-fingerprint'",
+            "published_fence = 99",
+            "evaluator_revision = 'old-revision'",
+        ] {
+            connection
+                .execute(
+                    &format!("UPDATE burn_check_assessment SET {stale_field}"),
+                    [],
+                )
+                .unwrap();
+            assert_eq!(
+                session_status(&connection).status,
+                crate::dto::SessionHygieneStatus::Checking,
+                "stale assessment field: {stale_field}"
+            );
+            connection
+                .execute(
+                    "UPDATE burn_check_assessment SET source_fingerprint = 'fp',
+                        published_fence = 4, evaluator_revision = ?1",
+                    [antiburn_local::analysis::ignored_instructions::evaluator_revision()],
+                )
+                .unwrap();
+        }
+
+        connection
+            .execute("UPDATE burn_check_assessment SET status = 'queued'", [])
+            .unwrap();
+        assert_eq!(
+            session_status(&connection).status,
+            crate::dto::SessionHygieneStatus::Checking
+        );
     }
 
     #[test]

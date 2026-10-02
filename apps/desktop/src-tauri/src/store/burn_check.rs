@@ -290,13 +290,13 @@ impl Store {
     ) -> anyhow::Result<(std::collections::BTreeMap<String, u64>, i64)> {
         let mut connection = self.lock();
         let transaction = connection.transaction()?;
-        let current: Option<(String, u64, i64, String, i64)> = transaction
+        let current: Option<(String, u64, String, i64)> = transaction
             .query_row(
-                "SELECT instruction_digest, incarnation, source_generation, positions_json, observed_at_ms
+                "SELECT instruction_digest, incarnation, positions_json, observed_at_ms
                    FROM burn_check_instruction_epoch
                   WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
                 rusqlite::params![key.environment_key, key.agent, key.session_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()?;
         let observed_positions: String = transaction.query_row(
@@ -309,24 +309,20 @@ impl Store {
         )?;
         let mut positions: std::collections::BTreeMap<String, u64> =
             serde_json::from_str(&observed_positions)?;
-        let observed_at_ms =
-            if let Some((old_digest, old_incarnation, old_generation, previous, at)) = &current
-                && old_digest == digest
-                && *old_incarnation == incarnation
-                && *old_generation == generation
-            {
-                let previous: std::collections::BTreeMap<String, u64> =
-                    serde_json::from_str(previous)?;
-                positions.retain(|source, _| !previous.contains_key(source));
-                positions.extend(previous);
-                *at
-            } else {
-                now_ms
-            };
-        if let Some((old_digest, old_incarnation, old_generation, previous, at)) = current
+        let observed_at_ms = if let Some((old_digest, old_incarnation, previous, at)) = &current
+            && old_digest == digest
+            && *old_incarnation == incarnation
+        {
+            let previous: std::collections::BTreeMap<String, u64> = serde_json::from_str(previous)?;
+            positions.retain(|source, _| !previous.contains_key(source));
+            positions.extend(previous);
+            *at
+        } else {
+            now_ms
+        };
+        if let Some((old_digest, old_incarnation, previous, at)) = current
             && old_digest == digest
             && old_incarnation == incarnation
-            && old_generation == generation
             && at == observed_at_ms
             && serde_json::from_str::<std::collections::BTreeMap<String, u64>>(&previous)?
                 == positions

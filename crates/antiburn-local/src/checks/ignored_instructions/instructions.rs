@@ -123,6 +123,7 @@ pub fn segment_markdown(
     let line_offset = frontmatter_line_count as u32;
     let mut sections = Vec::new();
     let mut heading_stack: Vec<(usize, String, String)> = Vec::new();
+    let mut document_context = String::new();
     let mut body = String::new();
     let mut start_line = line_offset.saturating_add(1);
     let mut in_fence = false;
@@ -130,6 +131,7 @@ pub fn segment_markdown(
     let emit = |sections: &mut Vec<InstructionRuleSection>,
                 heading_stack: &[(usize, String, String)],
                 body: &str,
+                document_context: &str,
                 start_line: u32,
                 end_line: u32|
      -> Result<(), MarkdownLimit> {
@@ -184,6 +186,7 @@ pub fn segment_markdown(
                 .map(|(_, _, context)| context.as_str())
                 .filter(|context| !context.trim().is_empty())
                 .chain((!frontmatter.is_empty()).then_some(frontmatter.as_str()))
+                .chain((!document_context.trim().is_empty()).then_some(document_context))
                 .chain(std::iter::once(rule_text.as_str()))
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -245,13 +248,18 @@ pub fn segment_markdown(
             None
         };
         if let Some((level, title)) = heading {
-            emit(
-                &mut sections,
-                &heading_stack,
-                &body,
-                start_line,
-                line_number.saturating_sub(1),
-            )?;
+            if heading_stack.is_empty() {
+                document_context.clone_from(&body);
+            } else {
+                emit(
+                    &mut sections,
+                    &heading_stack,
+                    &body,
+                    &document_context,
+                    start_line,
+                    line_number.saturating_sub(1),
+                )?;
+            }
             if let Some((_, _, context)) = heading_stack.last_mut() {
                 *context = body.clone();
             }
@@ -282,6 +290,7 @@ pub fn segment_markdown(
         &mut sections,
         &heading_stack,
         &body,
+        &document_context,
         start_line,
         line_offset.saturating_add(lines.len() as u32),
     )?;
@@ -496,6 +505,40 @@ mod tests {
         assert!(sections[1].text.contains("Only when publishing a release."));
         assert!(sections[2].text.contains("Only when publishing a release."));
         assert!(sections[2].text.contains("Run the tests."));
+    }
+
+    #[test]
+    fn document_preamble_conditions_apply_to_top_level_and_nested_rules() {
+        let sections = segment_markdown(
+            "AGENTS.md",
+            "Only when publishing a release.\n\n# Commands\nNever invoke `Bash`.\n\n## Reports\nDo not expose secrets.",
+        )
+        .unwrap();
+
+        assert_eq!(sections.len(), 2);
+        assert_eq!(sections[0].heading, "Commands");
+        assert_eq!(sections[1].heading, "Commands / Reports");
+        assert!(sections[0].text.contains("Only when publishing a release."));
+        assert!(sections[1].text.contains("Only when publishing a release."));
+        assert_eq!(sections[0].start_line, 4);
+        assert_eq!(sections[1].start_line, 7);
+    }
+
+    #[test]
+    fn document_preamble_applies_to_setext_headings_and_does_not_leak_between_siblings() {
+        let sections = segment_markdown(
+            "AGENTS.md",
+            "Only during release work.\n\nFirst\n=====\nRun the release checks.\n\nSecond\n=====\nReview the release notes.",
+        )
+        .unwrap();
+
+        assert_eq!(sections.len(), 2);
+        assert!(sections[0].text.contains("Only during release work."));
+        assert!(sections[1].text.contains("Only during release work."));
+        assert!(!sections[0].text.contains("Review the release notes."));
+        assert!(!sections[1].text.contains("Run the release checks."));
+        assert_eq!(sections[0].start_line, 5);
+        assert_eq!(sections[1].start_line, 9);
     }
 
     #[test]

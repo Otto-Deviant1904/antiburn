@@ -426,6 +426,13 @@ pub async fn discover_current_instructions(
     }
 }
 
+fn stable_relative_path(path: &Path) -> String {
+    path.components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 struct DiscoveryState {
     adapter: InstructionAdapter,
     root: PathBuf,
@@ -526,9 +533,9 @@ impl DiscoveryState {
             return;
         };
         let source = if let Ok(relative) = canonical.strip_prefix(&self.root) {
-            format!("project:{}", relative.display())
+            format!("project:{}", stable_relative_path(relative))
         } else if let Ok(relative) = canonical.strip_prefix(&self.home) {
-            format!("home:{}", relative.display())
+            format!("home:{}", stable_relative_path(relative))
         } else {
             "unknown_instruction_source".to_owned()
         };
@@ -943,6 +950,12 @@ mod tests {
     use super::super::instructions::InstructionProvenance;
     use super::*;
     use std::fs as std_fs;
+
+    #[test]
+    fn relative_instruction_source_paths_use_forward_slashes() {
+        let path = Path::new("src").join("module").join("AGENTS.md");
+        assert_eq!(stable_relative_path(&path), "src/module/AGENTS.md");
+    }
 
     fn roots() -> (tempfile::TempDir, PathBuf, PathBuf) {
         let temp = tempfile::tempdir().expect("temporary directory");

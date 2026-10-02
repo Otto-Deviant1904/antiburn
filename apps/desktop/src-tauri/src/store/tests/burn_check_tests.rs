@@ -152,24 +152,24 @@ fn instruction_epoch_fences_old_actions_after_edit_and_survives_resume() {
     assert_eq!(first.get("source"), Some(&1));
     insert_turn("source", 2);
     let (resumed, at) = store
-        .observe_burn_check_instruction_epoch(&record.key, 1, 1, "rule-a", 30_000)
+        .observe_burn_check_instruction_epoch(&record.key, 1, 2, "rule-a", 30_000)
         .unwrap();
     assert_eq!(resumed, first);
     assert_eq!(at, first_at);
     let (edited, at) = store
-        .observe_burn_check_instruction_epoch(&record.key, 1, 1, "rule-b", 40_000)
+        .observe_burn_check_instruction_epoch(&record.key, 1, 2, "rule-b", 40_000)
         .unwrap();
     assert_eq!(edited.get("source"), Some(&2));
     assert_eq!(at, 40_000);
     insert_turn("source", 3);
     let (after_append, at) = store
-        .observe_burn_check_instruction_epoch(&record.key, 1, 1, "rule-b", 50_000)
+        .observe_burn_check_instruction_epoch(&record.key, 1, 3, "rule-b", 50_000)
         .unwrap();
     assert_eq!(after_append, edited);
     assert_eq!(at, 40_000);
     insert_turn("new-source", 0);
     let (new_source, _) = store
-        .observe_burn_check_instruction_epoch(&record.key, 1, 1, "rule-b", 60_000)
+        .observe_burn_check_instruction_epoch(&record.key, 1, 3, "rule-b", 60_000)
         .unwrap();
     assert_eq!(new_source.get("source"), Some(&2));
     assert_eq!(new_source.get("new-source"), Some(&0));

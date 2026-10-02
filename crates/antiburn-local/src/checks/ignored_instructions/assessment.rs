@@ -44,7 +44,7 @@ use crate::analysis::jev::{
 
 pub const ASSESSMENT_MODEL: &str = crate::analysis::jev::PINNED_MODEL;
 pub const ASSESSMENT_PROJECTION_REVISION: u32 = 7;
-pub const ASSESSMENT_CHUNKING_REVISION: u32 = 20;
+pub const ASSESSMENT_CHUNKING_REVISION: u32 = 21;
 pub const ASSESSMENT_QUESTION_REVISION: u32 = 38;
 pub const ASSESSMENT_REDUCER_REVISION: u32 = 27;
 pub const MAX_ASSESSMENT_CANDIDATES: usize = 256;

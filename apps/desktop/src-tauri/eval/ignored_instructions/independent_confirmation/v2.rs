@@ -12,6 +12,10 @@ const BINDINGS: &str = include_str!(
     "../../../../../../crates/antiburn-local/tests/fixtures/ignored_instructions/independent_confirmation_v2.bindings.json"
 );
 
+fn normalized_text_bytes(text: &str) -> Vec<u8> {
+    text.replace("\r\n", "\n").into_bytes()
+}
+
 fn semantic_cases() -> (Value, Vec<Case>) {
     let fixture: Value =
         serde_json::from_str(SEMANTIC).expect("semantic confirmation fixture is JSON");
@@ -91,7 +95,7 @@ fn resolve_independent_v2_bindings_offline() {
     assert_eq!(bindings["binding_status"], "resolved");
     assert_eq!(
         bindings["semantic_sha256"],
-        Sha256::digest(SEMANTIC.as_bytes())
+        Sha256::digest(normalized_text_bytes(SEMANTIC))
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>()
@@ -322,7 +326,7 @@ fn independent_v2_semantic_labels_resolve_to_exact_production_bindings() {
             .as_str()
             .is_some_and(|text| !text.is_empty())
     }));
-    let semantic_hash = Sha256::digest(SEMANTIC.as_bytes())
+    let semantic_hash = Sha256::digest(normalized_text_bytes(SEMANTIC))
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
@@ -350,7 +354,11 @@ async fn independent_v2_provider_payloads_exclude_frozen_labels() {
 #[tokio::test]
 #[ignore = "billable independent v2 confirmation; run only after prompt preflight"]
 async fn independent_confirmation_v2_live_after_prompt_freeze() {
-    let suite_bytes = [SEMANTIC.as_bytes(), BINDINGS.as_bytes()].concat();
+    let suite_bytes = [
+        normalized_text_bytes(SEMANTIC),
+        normalized_text_bytes(BINDINGS),
+    ]
+    .concat();
     let fixture_sha256 = Sha256::digest(suite_bytes)
         .iter()
         .map(|byte| format!("{byte:02x}"))
