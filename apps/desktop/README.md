@@ -60,6 +60,11 @@ shell's app-framework dependencies must not leak into that resolution.
 - Platform dependencies for Tauri 2 — on Debian/Ubuntu:
   `libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev`
 
+Windows ARM64 builds use the `aarch64-pc-windows-msvc` Rust target. Install the
+Visual Studio C++ ARM64 build tools and LLVM, and make `clang` available on
+`PATH`; the `ring` dependency needs Clang for this target. CI builds and tests
+on the native `windows-11-arm` runner, which includes LLVM.
+
 ## Commands
 
 Run from the repository root:
