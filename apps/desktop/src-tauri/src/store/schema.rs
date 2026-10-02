@@ -209,7 +209,9 @@ DELETE FROM setting WHERE key = 'internal:burnCheckResponseCacheV1';
 /// current shape, not a prohibition on future migrations storing messages,
 /// tool activity, or file content recorded in a transcript. Any such migration
 /// must still be deliberate, bounded, covered by the local-data
-/// clear/delete/retention paths, and must not create a network or logging path.
+/// clear/delete/retention paths, and must not create a network or logging path
+/// except for the opt-in Smart Burn Checks assessment path documented in
+/// `docs/smart-burn-checks.md`.
 const V1: &str = r#"
 -- App settings, one row per key. Values are JSON scalars so a new preference
 -- is additive and needs no migration.
